@@ -150,7 +150,6 @@ enum ExternalAgent {
     #[default]
     Gemini,
     ClaudeCode,
-    Codex,
 }
 
 impl ExternalAgent {
@@ -158,7 +157,6 @@ impl ExternalAgent {
         match self {
             ExternalAgent::Gemini => Rc::new(agent_servers::Gemini),
             ExternalAgent::ClaudeCode => Rc::new(agent_servers::ClaudeCode),
-            ExternalAgent::Codex => Rc::new(agent_servers::Codex),
         }
     }
 }
@@ -286,7 +284,6 @@ fn update_command_palette_filter(cx: &mut App) {
         } else {
             filter.show_namespace("agent");
             filter.show_namespace("assistant");
-            filter.show_namespace("copilot");
             filter.show_namespace("zed_predict_onboarding");
 
             filter.show_namespace("edit_prediction");
