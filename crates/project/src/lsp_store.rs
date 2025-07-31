@@ -46,7 +46,6 @@ use language::{
     DiagnosticEntry, DiagnosticSet, DiagnosticSourceKind, Diff, File as _, Language, LanguageName,
     LanguageRegistry, LanguageToolchainStore, LocalFile, LspAdapter, LspAdapterDelegate, Patch,
     PointUtf16, TextBufferSnapshot, ToOffset, ToPointUtf16, Transaction, Unclipped,
-    WorkspaceFoldersContent,
     language_settings::{
         FormatOnSave, Formatter, LanguageSettings, SelectedFormatter, language_settings,
     },
@@ -218,7 +217,6 @@ impl LocalLspStore {
 
         let binary = self.get_language_server_binary(adapter.clone(), delegate.clone(), true, cx);
         let pending_workspace_folders: Arc<Mutex<BTreeSet<Url>>> = Default::default();
-
         let pending_server = cx.spawn({
             let adapter = adapter.clone();
             let server_name = adapter.name.clone();
@@ -244,18 +242,14 @@ impl LocalLspStore {
                     return Ok(server);
                 }
 
-                let code_action_kinds = adapter.code_action_kinds();
                 lsp::LanguageServer::new(
                     stderr_capture,
                     server_id,
                     server_name,
                     binary,
                     &root_path,
-                    code_action_kinds,
-                    Some(pending_workspace_folders).filter(|_| {
-                        adapter.adapter.workspace_folders_content()
-                            == WorkspaceFoldersContent::SubprojectRoots
-                    }),
+                    adapter.code_action_kinds(),
+                    pending_workspace_folders,
                     cx,
                 )
             }
@@ -424,7 +418,7 @@ impl LocalLspStore {
         if settings.as_ref().is_some_and(|b| b.path.is_some()) {
             let settings = settings.unwrap();
 
-            return cx.background_spawn(async move {
+            return cx.spawn(async move |_| {
                 let mut env = delegate.shell_env().await;
                 env.extend(settings.env.unwrap_or_default());
 
@@ -581,7 +575,8 @@ impl LocalLspStore {
                         };
                         let root = server.workspace_folders();
                         Ok(Some(
-                            root.into_iter()
+                            root.iter()
+                                .cloned()
                                 .map(|uri| WorkspaceFolder {
                                     uri,
                                     name: Default::default(),
@@ -2425,12 +2420,36 @@ impl LocalLspStore {
                 let server_id = server_node.server_id_or_init(
                     |LaunchDisposition {
                          server_name,
-
+                         attach,
                          path,
                          settings,
                      }| {
-                        let server_id =
-                           {
+                        let server_id = match attach {
+                           language::Attach::InstancePerRoot => {
+                               // todo: handle instance per root proper.
+                               if let Some(server_ids) = self
+                                   .language_server_ids
+                                   .get(&(worktree_id, server_name.clone()))
+                               {
+                                   server_ids.iter().cloned().next().unwrap()
+                               } else {
+                                   let language_name = language.name();
+                                   let adapter = self.languages
+                                       .lsp_adapters(&language_name)
+                                       .into_iter()
+                                       .find(|adapter| &adapter.name() == server_name)
+                                       .expect("To find LSP adapter");
+                                   let server_id = self.start_language_server(
+                                       &worktree,
+                                       delegate.clone(),
+                                       adapter,
+                                       settings,
+                                       cx,
+                                   );
+                                   server_id
+                               }
+                           }
+                           language::Attach::Shared => {
                                let uri = Url::from_file_path(
                                    worktree.read(cx).abs_path().join(&path.path),
                                );
@@ -2465,7 +2484,7 @@ impl LocalLspStore {
                                } else {
                                    unreachable!("Language server ID should be available, as it's registered on demand")
                                }
-
+                           }
                         };
                         let lsp_store = self.weak.clone();
                         let server_name = server_node.name();
@@ -4681,11 +4700,35 @@ impl LspStore {
                                 let server_id = node.server_id_or_init(
                                     |LaunchDisposition {
                                          server_name,
-
+                                         attach,
                                          path,
                                          settings,
-                                     }|
-                                         {
+                                     }| match attach {
+                                        language::Attach::InstancePerRoot => {
+                                            // todo: handle instance per root proper.
+                                            if let Some(server_ids) = local
+                                                .language_server_ids
+                                                .get(&(worktree_id, server_name.clone()))
+                                            {
+                                                server_ids.iter().cloned().next().unwrap()
+                                            } else {
+                                                let adapter = local
+                                                    .languages
+                                                    .lsp_adapters(&language)
+                                                    .into_iter()
+                                                    .find(|adapter| &adapter.name() == server_name)
+                                                    .expect("To find LSP adapter");
+                                                let server_id = local.start_language_server(
+                                                    &worktree,
+                                                    delegate.clone(),
+                                                    adapter,
+                                                    settings,
+                                                    cx,
+                                                );
+                                                server_id
+                                            }
+                                        }
+                                        language::Attach::Shared => {
                                             let uri = Url::from_file_path(
                                                 worktree.read(cx).abs_path().join(&path.path),
                                             );
@@ -4714,6 +4757,7 @@ impl LspStore {
                                             }
                                             server_id
                                         }
+                                    },
                                 );
 
                                 if let Some(language_server_id) = server_id {
@@ -4911,7 +4955,7 @@ impl LspStore {
                 language_server_id: server_id.0 as u64,
                 hint: Some(InlayHints::project_to_proto_hint(hint.clone())),
             };
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 let response = upstream_client
                     .request(request)
                     .await
@@ -5125,7 +5169,7 @@ impl LspStore {
                 trigger,
                 version: serialize_version(&buffer.read(cx).version()),
             };
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 client
                     .request(request)
                     .await?
@@ -5284,7 +5328,7 @@ impl LspStore {
                 GetDefinitions { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(definitions_task
                     .await
                     .into_iter()
@@ -5357,7 +5401,7 @@ impl LspStore {
                 GetDeclarations { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(declarations_task
                     .await
                     .into_iter()
@@ -5430,7 +5474,7 @@ impl LspStore {
                 GetTypeDefinitions { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(type_definitions_task
                     .await
                     .into_iter()
@@ -5503,7 +5547,7 @@ impl LspStore {
                 GetImplementations { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(implementations_task
                     .await
                     .into_iter()
@@ -5576,7 +5620,7 @@ impl LspStore {
                 GetReferences { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(references_task
                     .await
                     .into_iter()
@@ -5660,7 +5704,7 @@ impl LspStore {
                 },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(all_actions_task
                     .await
                     .into_iter()
@@ -6854,7 +6898,7 @@ impl LspStore {
         } else {
             let document_colors_task =
                 self.request_multiple_lsp_locally(buffer, None::<usize>, GetDocumentColor, cx);
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 Ok(document_colors_task
                     .await
                     .into_iter()
@@ -6933,7 +6977,7 @@ impl LspStore {
                 GetSignatureHelp { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 all_actions_task
                     .await
                     .into_iter()
@@ -7010,7 +7054,7 @@ impl LspStore {
                 GetHover { position },
                 cx,
             );
-            cx.background_spawn(async move {
+            cx.spawn(async move |_, _| {
                 all_actions_task
                     .await
                     .into_iter()
@@ -8013,7 +8057,7 @@ impl LspStore {
             })
             .collect::<FuturesUnordered<_>>();
 
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let mut responses = Vec::with_capacity(response_results.len());
             while let Some((server_id, response_result)) = response_results.next().await {
                 if let Some(response) = response_result.log_err() {

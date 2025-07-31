@@ -43,7 +43,7 @@ fn zed_prompt_renderer(
     let renderer = cx.new({
         |cx| ZedPromptRenderer {
             _level: level,
-            message: cx.new(|cx| Markdown::new(SharedString::new(message), None, None, cx)),
+            message: message.to_string(),
             actions: actions.iter().map(|a| a.label().to_string()).collect(),
             focus: cx.focus_handle(),
             active_action_id: 0,
@@ -58,7 +58,7 @@ fn zed_prompt_renderer(
 
 pub struct ZedPromptRenderer {
     _level: PromptLevel,
-    message: Entity<Markdown>,
+    message: String,
     actions: Vec<String>,
     focus: FocusHandle,
     active_action_id: usize,
@@ -114,7 +114,7 @@ impl ZedPromptRenderer {
 impl Render for ZedPromptRenderer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = ThemeSettings::get_global(cx);
-        let font_size = settings.ui_font_size(cx).into();
+        let font_family = settings.ui_font.family.clone();
         let prompt = v_flex()
             .key_context("Prompt")
             .cursor_default()
@@ -130,38 +130,24 @@ impl Render for ZedPromptRenderer {
             .overflow_hidden()
             .p_4()
             .gap_4()
-            .font_family(settings.ui_font.family.clone())
+            .font_family(font_family)
             .child(
                 div()
                     .w_full()
-                    .child(MarkdownElement::new(self.message.clone(), {
-                        let mut base_text_style = window.text_style();
-                        base_text_style.refine(&TextStyleRefinement {
-                            font_family: Some(settings.ui_font.family.clone()),
-                            font_size: Some(font_size),
-                            font_weight: Some(FontWeight::BOLD),
-                            color: Some(ui::Color::Default.color(cx)),
-                            ..Default::default()
-                        });
-                        MarkdownStyle {
-                            base_text_style,
-                            selection_background_color: cx
-                                .theme()
-                                .colors()
-                                .element_selection_background,
-                            ..Default::default()
-                        }
-                    })),
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.message.clone())
+                    .text_color(ui::Color::Default.color(cx)),
             )
             .children(self.detail.clone().map(|detail| {
                 div()
                     .w_full()
                     .text_xs()
                     .child(MarkdownElement::new(detail, {
+                        let settings = ThemeSettings::get_global(cx);
                         let mut base_text_style = window.text_style();
                         base_text_style.refine(&TextStyleRefinement {
                             font_family: Some(settings.ui_font.family.clone()),
-                            font_size: Some(font_size),
+                            font_size: Some(settings.ui_font_size(cx).into()),
                             color: Some(ui::Color::Muted.color(cx)),
                             ..Default::default()
                         });
@@ -190,28 +176,24 @@ impl Render for ZedPromptRenderer {
                 }),
             ));
 
-        div()
-            .size_full()
-            .occlude()
-            .bg(gpui::black().opacity(0.2))
-            .child(
-                div()
-                    .size_full()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .flex()
-                    .flex_col()
-                    .justify_around()
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_row()
-                            .justify_around()
-                            .child(prompt),
-                    ),
-            )
+        div().size_full().occlude().child(
+            div()
+                .size_full()
+                .absolute()
+                .top_0()
+                .left_0()
+                .flex()
+                .flex_col()
+                .justify_around()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .justify_around()
+                        .child(prompt),
+                ),
+        )
     }
 }
 

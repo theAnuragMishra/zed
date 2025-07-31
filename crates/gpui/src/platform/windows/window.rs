@@ -26,6 +26,7 @@ use windows::{
     core::*,
 };
 
+use crate::platform::blade::{BladeContext, BladeRenderer};
 use crate::*;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowStatePtr>);
@@ -48,7 +49,7 @@ pub struct WindowsWindowState {
     pub system_key_handled: bool,
     pub hovered: bool,
 
-    pub renderer: DirectXRenderer,
+    pub renderer: BladeRenderer,
 
     pub click_state: ClickState,
     pub system_settings: WindowsSystemSettings,
@@ -79,12 +80,13 @@ pub(crate) struct WindowsWindowStatePtr {
 impl WindowsWindowState {
     fn new(
         hwnd: HWND,
+        transparent: bool,
         cs: &CREATESTRUCTW,
         current_cursor: Option<HCURSOR>,
         display: WindowsDisplay,
+        gpu_context: &BladeContext,
         min_size: Option<Size<Pixels>>,
         appearance: WindowAppearance,
-        disable_direct_composition: bool,
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -101,8 +103,7 @@ impl WindowsWindowState {
         };
         let border_offset = WindowBorderOffset::default();
         let restore_from_minimized = None;
-        let renderer = DirectXRenderer::new(hwnd, disable_direct_composition)
-            .context("Creating DirectX renderer")?;
+        let renderer = windows_renderer::init(gpu_context, hwnd, transparent)?;
         let callbacks = Callbacks::default();
         let input_handler = None;
         let pending_surrogate = None;
@@ -205,12 +206,13 @@ impl WindowsWindowStatePtr {
     fn new(context: &WindowCreateContext, hwnd: HWND, cs: &CREATESTRUCTW) -> Result<Rc<Self>> {
         let state = RefCell::new(WindowsWindowState::new(
             hwnd,
+            context.transparent,
             cs,
             context.current_cursor,
             context.display,
+            context.gpu_context,
             context.min_size,
             context.appearance,
-            context.disable_direct_composition,
         )?);
 
         Ok(Rc::new_cyclic(|this| Self {
@@ -327,11 +329,12 @@ pub(crate) struct Callbacks {
     pub(crate) appearance_changed: Option<Box<dyn FnMut()>>,
 }
 
-struct WindowCreateContext {
+struct WindowCreateContext<'a> {
     inner: Option<Result<Rc<WindowsWindowStatePtr>>>,
     handle: AnyWindowHandle,
     hide_title_bar: bool,
     display: WindowsDisplay,
+    transparent: bool,
     is_movable: bool,
     min_size: Option<Size<Pixels>>,
     executor: ForegroundExecutor,
@@ -340,9 +343,9 @@ struct WindowCreateContext {
     drop_target_helper: IDropTargetHelper,
     validation_number: usize,
     main_receiver: flume::Receiver<Runnable>,
+    gpu_context: &'a BladeContext,
     main_thread_id_win32: u32,
     appearance: WindowAppearance,
-    disable_direct_composition: bool,
 }
 
 impl WindowsWindow {
@@ -350,6 +353,7 @@ impl WindowsWindow {
         handle: AnyWindowHandle,
         params: WindowParams,
         creation_info: WindowCreationInfo,
+        gpu_context: &BladeContext,
     ) -> Result<Self> {
         let WindowCreationInfo {
             icon,
@@ -375,20 +379,14 @@ impl WindowsWindow {
                 .map(|title| title.as_ref())
                 .unwrap_or(""),
         );
-        let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
-            .is_ok_and(|value| value == "true" || value == "1");
-
-        let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
-            (WS_EX_TOOLWINDOW, WINDOW_STYLE(0x0))
+        let (dwexstyle, mut dwstyle) = if params.kind == WindowKind::PopUp {
+            (WS_EX_TOOLWINDOW | WS_EX_LAYERED, WINDOW_STYLE(0x0))
         } else {
             (
-                WS_EX_APPWINDOW,
+                WS_EX_APPWINDOW | WS_EX_LAYERED,
                 WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX,
             )
         };
-        if !disable_direct_composition {
-            dwexstyle |= WS_EX_NOREDIRECTIONBITMAP;
-        }
 
         let hinstance = get_module_handle();
         let display = if let Some(display_id) = params.display_id {
@@ -403,6 +401,7 @@ impl WindowsWindow {
             handle,
             hide_title_bar,
             display,
+            transparent: true,
             is_movable: params.is_movable,
             min_size: params.window_min_size,
             executor,
@@ -411,9 +410,9 @@ impl WindowsWindow {
             drop_target_helper,
             validation_number,
             main_receiver,
+            gpu_context,
             main_thread_id_win32,
             appearance,
-            disable_direct_composition,
         };
         let lpparam = Some(&context as *const _ as *const _);
         let creation_result = unsafe {
@@ -454,6 +453,14 @@ impl WindowsWindow {
                 state: WindowOpenState::Windowed,
             });
         }
+        // The render pipeline will perform compositing on the GPU when the
+        // swapchain is configured correctly (see downstream of
+        // update_transparency).
+        // The following configuration is a one-time setup to ensure that the
+        // window is going to be composited with per-pixel alpha, but the render
+        // pipeline is responsible for effectively calling UpdateLayeredWindow
+        // at the appropriate time.
+        unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)? };
 
         Ok(Self(state_ptr))
     }
@@ -478,6 +485,7 @@ impl rwh::HasDisplayHandle for WindowsWindow {
 
 impl Drop for WindowsWindow {
     fn drop(&mut self) {
+        self.0.state.borrow_mut().renderer.destroy();
         // clone this `Rc` to prevent early release of the pointer
         let this = self.0.clone();
         self.0
@@ -697,21 +705,24 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
-        let hwnd = self.0.hwnd;
+        let mut window_state = self.0.state.borrow_mut();
+        window_state
+            .renderer
+            .update_transparency(background_appearance != WindowBackgroundAppearance::Opaque);
 
         match background_appearance {
             WindowBackgroundAppearance::Opaque => {
                 // ACCENT_DISABLED
-                set_window_composition_attribute(hwnd, None, 0);
+                set_window_composition_attribute(window_state.hwnd, None, 0);
             }
             WindowBackgroundAppearance::Transparent => {
                 // Use ACCENT_ENABLE_TRANSPARENTGRADIENT for transparent background
-                set_window_composition_attribute(hwnd, None, 2);
+                set_window_composition_attribute(window_state.hwnd, None, 2);
             }
             WindowBackgroundAppearance::Blurred => {
                 // Enable acrylic blur
                 // ACCENT_ENABLE_ACRYLICBLURBEHIND
-                set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
+                set_window_composition_attribute(window_state.hwnd, Some((0, 0, 0, 0)), 4);
             }
         }
     }
@@ -783,11 +794,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        self.0.state.borrow_mut().renderer.draw(scene).log_err();
+        self.0.state.borrow_mut().renderer.draw(scene)
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.0.state.borrow().renderer.sprite_atlas()
+        self.0.state.borrow().renderer.sprite_atlas().clone()
     }
 
     fn get_raw_handle(&self) -> HWND {
@@ -795,11 +806,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.0.state.borrow().renderer.gpu_specs().log_err()
+        Some(self.0.state.borrow().renderer.gpu_specs())
     }
 
     fn update_ime_position(&self, _bounds: Bounds<ScaledPixels>) {
-        // There is no such thing on Windows.
+        // todo(windows)
     }
 }
 
@@ -1291,6 +1302,52 @@ fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32
                 cb_data: std::mem::size_of::<AccentPolicy>(),
             };
             let _ = set_window_composition_attribute(hwnd, &mut data as *mut _ as _);
+        }
+    }
+}
+
+mod windows_renderer {
+    use crate::platform::blade::{BladeContext, BladeRenderer, BladeSurfaceConfig};
+    use raw_window_handle as rwh;
+    use std::num::NonZeroIsize;
+    use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::GWLP_HINSTANCE};
+
+    use crate::{get_window_long, show_error};
+
+    pub(super) fn init(
+        context: &BladeContext,
+        hwnd: HWND,
+        transparent: bool,
+    ) -> anyhow::Result<BladeRenderer> {
+        let raw = RawWindow { hwnd };
+        let config = BladeSurfaceConfig {
+            size: Default::default(),
+            transparent,
+        };
+        BladeRenderer::new(context, &raw, config)
+            .inspect_err(|err| show_error("Failed to initialize BladeRenderer", err.to_string()))
+    }
+
+    struct RawWindow {
+        hwnd: HWND,
+    }
+
+    impl rwh::HasWindowHandle for RawWindow {
+        fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+            Ok(unsafe {
+                let hwnd = NonZeroIsize::new_unchecked(self.hwnd.0 as isize);
+                let mut handle = rwh::Win32WindowHandle::new(hwnd);
+                let hinstance = get_window_long(self.hwnd, GWLP_HINSTANCE);
+                handle.hinstance = NonZeroIsize::new(hinstance);
+                rwh::WindowHandle::borrow_raw(handle.into())
+            })
+        }
+    }
+
+    impl rwh::HasDisplayHandle for RawWindow {
+        fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+            let handle = rwh::WindowsDisplayHandle::new();
+            Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
         }
     }
 }

@@ -11,14 +11,22 @@ use ui::{
 #[derive(IntoElement, RegisterComponent, Documented)]
 pub struct ThemePreviewTile {
     theme: Arc<Theme>,
+    selected: bool,
     seed: f32,
 }
 
 impl ThemePreviewTile {
-    pub const CORNER_RADIUS: Pixels = px(8.0);
+    pub fn new(theme: Arc<Theme>, selected: bool, seed: f32) -> Self {
+        Self {
+            theme,
+            selected,
+            seed,
+        }
+    }
 
-    pub fn new(theme: Arc<Theme>, seed: f32) -> Self {
-        Self { theme, seed }
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
     }
 }
 
@@ -26,7 +34,7 @@ impl RenderOnce for ThemePreviewTile {
     fn render(self, _window: &mut ui::Window, _cx: &mut ui::App) -> impl IntoElement {
         let color = self.theme.colors();
 
-        let root_radius = Self::CORNER_RADIUS;
+        let root_radius = px(8.0);
         let root_border = px(2.0);
         let root_padding = px(2.0);
         let child_border = px(1.0);
@@ -176,6 +184,11 @@ impl RenderOnce for ThemePreviewTile {
             .size_full()
             .rounded(root_radius)
             .p(root_padding)
+            .border(root_border)
+            .border_color(color.border_transparent)
+            .when(self.selected, |this| {
+                this.border_color(color.border_selected)
+            })
             .child(
                 div()
                     .size_full()
@@ -217,14 +230,24 @@ impl Component for ThemePreviewTile {
                 .p_4()
                 .children({
                     if let Some(one_dark) = one_dark.ok() {
-                        vec![example_group(vec![single_example(
-                            "Default",
-                            div()
-                                .w(px(240.))
-                                .h(px(180.))
-                                .child(ThemePreviewTile::new(one_dark.clone(), 0.42))
-                                .into_any_element(),
-                        )])]
+                        vec![example_group(vec![
+                            single_example(
+                                "Default",
+                                div()
+                                    .w(px(240.))
+                                    .h(px(180.))
+                                    .child(ThemePreviewTile::new(one_dark.clone(), false, 0.42))
+                                    .into_any_element(),
+                            ),
+                            single_example(
+                                "Selected",
+                                div()
+                                    .w(px(240.))
+                                    .h(px(180.))
+                                    .child(ThemePreviewTile::new(one_dark, true, 0.42))
+                                    .into_any_element(),
+                            ),
+                        ])]
                     } else {
                         vec![]
                     }
@@ -238,11 +261,12 @@ impl Component for ThemePreviewTile {
                                 themes_to_preview
                                     .iter()
                                     .enumerate()
-                                    .map(|(_, theme)| {
-                                        div()
-                                            .w(px(200.))
-                                            .h(px(140.))
-                                            .child(ThemePreviewTile::new(theme.clone(), 0.42))
+                                    .map(|(i, theme)| {
+                                        div().w(px(200.)).h(px(140.)).child(ThemePreviewTile::new(
+                                            theme.clone(),
+                                            false,
+                                            0.42,
+                                        ))
                                     })
                                     .collect::<Vec<_>>(),
                             )

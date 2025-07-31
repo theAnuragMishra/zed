@@ -1,10 +1,6 @@
 use super::{Client, Status, TypedEnvelope, proto};
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Utc};
-use cloud_llm_client::{
-    EDIT_PREDICTIONS_USAGE_AMOUNT_HEADER_NAME, EDIT_PREDICTIONS_USAGE_LIMIT_HEADER_NAME,
-    MODEL_REQUESTS_USAGE_AMOUNT_HEADER_NAME, MODEL_REQUESTS_USAGE_LIMIT_HEADER_NAME, UsageLimit,
-};
 use collections::{HashMap, HashSet, hash_map::Entry};
 use derive_more::Deref;
 use feature_flags::FeatureFlagAppExt;
@@ -21,6 +17,10 @@ use std::{
 };
 use text::ReplicaId;
 use util::{TryFutureExt as _, maybe};
+use zed_llm_client::{
+    EDIT_PREDICTIONS_USAGE_AMOUNT_HEADER_NAME, EDIT_PREDICTIONS_USAGE_LIMIT_HEADER_NAME,
+    MODEL_REQUESTS_USAGE_AMOUNT_HEADER_NAME, MODEL_REQUESTS_USAGE_LIMIT_HEADER_NAME, UsageLimit,
+};
 
 pub type UserId = u64;
 
@@ -55,7 +55,7 @@ pub struct ParticipantIndex(pub u32);
 #[derive(Default, Debug)]
 pub struct User {
     pub id: UserId,
-    pub github_login: SharedString,
+    pub github_login: String,
     pub avatar_uri: SharedUri,
     pub name: Option<String>,
 }
@@ -107,13 +107,14 @@ pub enum ContactRequestStatus {
 
 pub struct UserStore {
     users: HashMap<u64, Arc<User>>,
-    by_github_login: HashMap<SharedString, u64>,
+    by_github_login: HashMap<String, u64>,
     participant_indices: HashMap<u64, ParticipantIndex>,
     update_contacts_tx: mpsc::UnboundedSender<UpdateContacts>,
     current_plan: Option<proto::Plan>,
     subscription_period: Option<(DateTime<Utc>, DateTime<Utc>)>,
     trial_started_at: Option<DateTime<Utc>>,
     model_request_usage: Option<ModelRequestUsage>,
+    edit_prediction_usage: Option<EditPredictionUsage>,
     is_usage_based_billing_enabled: Option<bool>,
     account_too_young: Option<bool>,
     has_overdue_invoices: Option<bool>,
@@ -144,7 +145,6 @@ pub enum Event {
     ShowContacts,
     ParticipantIndicesChanged,
     PrivateUserInfoUpdated,
-    PlanUpdated,
 }
 
 #[derive(Clone, Copy)]
@@ -192,6 +192,7 @@ impl UserStore {
             subscription_period: None,
             trial_started_at: None,
             model_request_usage: None,
+            edit_prediction_usage: None,
             is_usage_based_billing_enabled: None,
             account_too_young: None,
             has_overdue_invoices: None,
@@ -379,9 +380,14 @@ impl UserStore {
                         RequestUsage::from_proto(usage.model_requests_usage_amount, limit)
                     })
                     .map(ModelRequestUsage);
+                this.edit_prediction_usage = usage
+                    .edit_predictions_usage_limit
+                    .and_then(|limit| {
+                        RequestUsage::from_proto(usage.model_requests_usage_amount, limit)
+                    })
+                    .map(EditPredictionUsage);
             }
 
-            cx.emit(Event::PlanUpdated);
             cx.notify();
         })?;
         Ok(())
@@ -389,6 +395,15 @@ impl UserStore {
 
     pub fn update_model_request_usage(&mut self, usage: ModelRequestUsage, cx: &mut Context<Self>) {
         self.model_request_usage = Some(usage);
+        cx.notify();
+    }
+
+    pub fn update_edit_prediction_usage(
+        &mut self,
+        usage: EditPredictionUsage,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_prediction_usage = Some(usage);
         cx.notify();
     }
 
@@ -780,6 +795,10 @@ impl UserStore {
         self.model_request_usage
     }
 
+    pub fn edit_prediction_usage(&self) -> Option<EditPredictionUsage> {
+        self.edit_prediction_usage
+    }
+
     pub fn watch_current_user(&self) -> watch::Receiver<Option<Arc<User>>> {
         self.current_user.clone()
     }
@@ -883,7 +902,7 @@ impl UserStore {
         let mut missing_user_ids = Vec::new();
         for id in user_ids {
             if let Some(github_login) = self.get_cached_user(id).map(|u| u.github_login.clone()) {
-                ret.insert(id, github_login);
+                ret.insert(id, github_login.into());
             } else {
                 missing_user_ids.push(id)
             }
@@ -904,7 +923,7 @@ impl User {
     fn new(message: proto::User) -> Arc<Self> {
         Arc::new(User {
             id: message.id,
-            github_login: message.github_login.into(),
+            github_login: message.github_login,
             avatar_uri: message.avatar_url.into(),
             name: message.name,
         })
