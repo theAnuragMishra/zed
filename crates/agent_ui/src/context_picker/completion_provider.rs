@@ -423,7 +423,7 @@ impl ContextPickerCompletionProvider {
         let icon_for_completion = if recent {
             IconName::HistoryRerun
         } else {
-            IconName::Thread
+            IconName::MessageBubbles
         };
         let new_text = format!("{} ", MentionLink::for_thread(&thread_entry));
         let new_text_len = new_text.len();
@@ -436,7 +436,7 @@ impl ContextPickerCompletionProvider {
             source: project::CompletionSource::Custom,
             icon_path: Some(icon_for_completion.path().into()),
             confirm: Some(confirm_completion_callback(
-                IconName::Thread.path().into(),
+                IconName::MessageBubbles.path().into(),
                 thread_entry.title().clone(),
                 excerpt_id,
                 source_range.start,

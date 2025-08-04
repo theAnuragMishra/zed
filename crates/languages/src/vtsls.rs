@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use collections::HashMap;
 use gpui::AsyncApp;
-use language::{LanguageName, LanguageToolchainStore, LspAdapter, LspAdapterDelegate};
+use language::{LanguageToolchainStore, LspAdapter, LspAdapterDelegate};
 use lsp::{CodeActionKind, LanguageServerBinary, LanguageServerName};
 use node_runtime::NodeRuntime;
 use project::{Fs, lsp_store::language_server_settings};
@@ -273,11 +273,11 @@ impl LspAdapter for VtslsLspAdapter {
         Ok(default_workspace_configuration)
     }
 
-    fn language_ids(&self) -> HashMap<LanguageName, String> {
+    fn language_ids(&self) -> HashMap<String, String> {
         HashMap::from_iter([
-            (LanguageName::new("TypeScript"), "typescript".into()),
-            (LanguageName::new("JavaScript"), "javascript".into()),
-            (LanguageName::new("TSX"), "typescriptreact".into()),
+            ("TypeScript".into(), "typescript".into()),
+            ("JavaScript".into(), "javascript".into()),
+            ("TSX".into(), "typescriptreact".into()),
         ])
     }
 }

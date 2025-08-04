@@ -566,7 +566,7 @@ impl RenderOnce for Switch {
 pub struct SwitchField {
     id: ElementId,
     label: SharedString,
-    description: Option<SharedString>,
+    description: SharedString,
     toggle_state: ToggleState,
     on_click: Arc<dyn Fn(&ToggleState, &mut Window, &mut App) + 'static>,
     disabled: bool,
@@ -577,24 +577,19 @@ impl SwitchField {
     pub fn new(
         id: impl Into<ElementId>,
         label: impl Into<SharedString>,
-        description: Option<SharedString>,
+        description: impl Into<SharedString>,
         toggle_state: impl Into<ToggleState>,
         on_click: impl Fn(&ToggleState, &mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
-            description: description,
+            description: description.into(),
             toggle_state: toggle_state.into(),
             on_click: Arc::new(on_click),
             disabled: false,
             color: SwitchColor::Accent,
         }
-    }
-
-    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
-        self.description = Some(description.into());
-        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -614,22 +609,17 @@ impl RenderOnce for SwitchField {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         h_flex()
             .id(SharedString::from(format!("{}-container", self.id)))
-            .when(!self.disabled, |this| {
-                this.hover(|this| this.cursor_pointer())
-            })
             .w_full()
             .gap_4()
             .justify_between()
             .flex_wrap()
-            .child(match &self.description {
-                Some(description) => v_flex()
+            .child(
+                v_flex()
                     .gap_0p5()
                     .max_w_5_6()
-                    .child(Label::new(self.label.clone()))
-                    .child(Label::new(description.clone()).color(Color::Muted))
-                    .into_any_element(),
-                None => Label::new(self.label.clone()).into_any_element(),
-            })
+                    .child(Label::new(self.label))
+                    .child(Label::new(self.description).color(Color::Muted)),
+            )
             .child(
                 Switch::new(
                     SharedString::from(format!("{}-switch", self.id)),
@@ -678,7 +668,7 @@ impl Component for SwitchField {
                                 SwitchField::new(
                                     "switch_field_unselected",
                                     "Enable notifications",
-                                    Some("Receive notifications when new messages arrive.".into()),
+                                    "Receive notifications when new messages arrive.",
                                     ToggleState::Unselected,
                                     |_, _, _| {},
                                 )
@@ -689,7 +679,7 @@ impl Component for SwitchField {
                                 SwitchField::new(
                                     "switch_field_selected",
                                     "Enable notifications",
-                                    Some("Receive notifications when new messages arrive.".into()),
+                                    "Receive notifications when new messages arrive.",
                                     ToggleState::Selected,
                                     |_, _, _| {},
                                 )
@@ -705,7 +695,7 @@ impl Component for SwitchField {
                                 SwitchField::new(
                                     "switch_field_default",
                                     "Default color",
-                                    Some("This uses the default switch color.".into()),
+                                    "This uses the default switch color.",
                                     ToggleState::Selected,
                                     |_, _, _| {},
                                 )
@@ -716,7 +706,7 @@ impl Component for SwitchField {
                                 SwitchField::new(
                                     "switch_field_accent",
                                     "Accent color",
-                                    Some("This uses the accent color scheme.".into()),
+                                    "This uses the accent color scheme.",
                                     ToggleState::Selected,
                                     |_, _, _| {},
                                 )
@@ -732,25 +722,11 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_disabled",
                                 "Disabled field",
-                                Some("This field is disabled and cannot be toggled.".into()),
+                                "This field is disabled and cannot be toggled.",
                                 ToggleState::Selected,
                                 |_, _, _| {},
                             )
                             .disabled(true)
-                            .into_any_element(),
-                        )],
-                    ),
-                    example_group_with_title(
-                        "No Description",
-                        vec![single_example(
-                            "No Description",
-                            SwitchField::new(
-                                "switch_field_disabled",
-                                "Disabled field",
-                                None,
-                                ToggleState::Selected,
-                                |_, _, _| {},
-                            )
                             .into_any_element(),
                         )],
                     ),

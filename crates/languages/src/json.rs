@@ -8,8 +8,8 @@ use futures::StreamExt;
 use gpui::{App, AsyncApp, Task};
 use http_client::github::{GitHubLspBinaryVersion, latest_github_release};
 use language::{
-    ContextProvider, LanguageName, LanguageRegistry, LanguageToolchainStore, LocalFile as _,
-    LspAdapter, LspAdapterDelegate,
+    ContextProvider, LanguageRegistry, LanguageToolchainStore, LocalFile as _, LspAdapter,
+    LspAdapterDelegate,
 };
 use lsp::{LanguageServerBinary, LanguageServerName};
 use node_runtime::NodeRuntime;
@@ -408,10 +408,10 @@ impl LspAdapter for JsonLspAdapter {
         Ok(config)
     }
 
-    fn language_ids(&self) -> HashMap<LanguageName, String> {
+    fn language_ids(&self) -> HashMap<String, String> {
         [
-            (LanguageName::new("JSON"), "json".into()),
-            (LanguageName::new("JSONC"), "jsonc".into()),
+            ("JSON".into(), "json".into()),
+            ("JSONC".into(), "jsonc".into()),
         ]
         .into_iter()
         .collect()

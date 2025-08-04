@@ -27,10 +27,7 @@ use git::repository::{
 };
 use git::status::StageStatus;
 use git::{Amend, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
-use git::{
-    ExpandCommitEditor, RestoreTrackedFiles, StageAll, StashAll, StashPop, TrashUntrackedFiles,
-    UnstageAll,
-};
+use git::{ExpandCommitEditor, RestoreTrackedFiles, StageAll, TrashUntrackedFiles, UnstageAll};
 use gpui::{
     Action, Animation, AnimationExt as _, AsyncApp, AsyncWindowContext, Axis, ClickEvent, Corner,
     DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyContext,
@@ -71,12 +68,12 @@ use ui::{
 use util::{ResultExt, TryFutureExt, maybe};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 
-use cloud_llm_client::CompletionIntent;
 use workspace::{
     Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     notifications::{DetachAndPromptErr, ErrorMessagePrompt, NotificationId},
 };
+use zed_llm_client::CompletionIntent;
 
 actions!(
     git_panel,
@@ -142,13 +139,6 @@ fn git_panel_context_menu(
                 "Unstage All",
                 UnstageAll.boxed_clone(),
             )
-            .separator()
-            .action_disabled_when(
-                !(state.has_new_changes || state.has_tracked_changes),
-                "Stash All",
-                StashAll.boxed_clone(),
-            )
-            .action("Stash Pop", StashPop.boxed_clone())
             .separator()
             .action("Open Diff", project_diff::Diff.boxed_clone())
             .separator()
@@ -390,9 +380,6 @@ pub(crate) fn commit_message_editor(
     window: &mut Window,
     cx: &mut Context<Editor>,
 ) -> Editor {
-    project.update(cx, |this, cx| {
-        this.mark_buffer_as_non_searchable(commit_message_buffer.read(cx).remote_id(), cx);
-    });
     let buffer = cx.new(|cx| MultiBuffer::singleton(commit_message_buffer, cx));
     let max_lines = if in_panel { MAX_PANEL_EDITOR_LINES } else { 18 };
     let mut commit_editor = Editor::new(
@@ -1425,52 +1412,6 @@ impl GitPanel {
         self.tracked_staged_count + self.new_staged_count + self.conflicted_staged_count
     }
 
-    pub fn stash_pop(&mut self, _: &StashPop, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(active_repository) = self.active_repository.clone() else {
-            return;
-        };
-
-        cx.spawn({
-            async move |this, cx| {
-                let stash_task = active_repository
-                    .update(cx, |repo, cx| repo.stash_pop(cx))?
-                    .await;
-                this.update(cx, |this, cx| {
-                    stash_task
-                        .map_err(|e| {
-                            this.show_error_toast("stash pop", e, cx);
-                        })
-                        .ok();
-                    cx.notify();
-                })
-            }
-        })
-        .detach();
-    }
-
-    pub fn stash_all(&mut self, _: &StashAll, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(active_repository) = self.active_repository.clone() else {
-            return;
-        };
-
-        cx.spawn({
-            async move |this, cx| {
-                let stash_task = active_repository
-                    .update(cx, |repo, cx| repo.stash_all(cx))?
-                    .await;
-                this.update(cx, |this, cx| {
-                    stash_task
-                        .map_err(|e| {
-                            this.show_error_toast("stash", e, cx);
-                        })
-                        .ok();
-                    cx.notify();
-                })
-            }
-        })
-        .detach();
-    }
-
     pub fn commit_message_buffer(&self, cx: &App) -> Entity<Buffer> {
         self.commit_editor
             .read(cx)
@@ -2416,7 +2357,7 @@ impl GitPanel {
                     .committer_name
                     .clone()
                     .or_else(|| participant.user.name.clone())
-                    .unwrap_or_else(|| participant.user.github_login.clone().to_string());
+                    .unwrap_or_else(|| participant.user.github_login.clone());
                 new_co_authors.push((name.clone(), email.clone()))
             }
         }
@@ -2436,7 +2377,7 @@ impl GitPanel {
             .name
             .clone()
             .or_else(|| user.name.clone())
-            .unwrap_or_else(|| user.github_login.clone().to_string());
+            .unwrap_or_else(|| user.github_login.clone());
         Some((name, email))
     }
 
@@ -4430,8 +4371,6 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::revert_selected))
                     .on_action(cx.listener(Self::clean_all))
                     .on_action(cx.listener(Self::generate_commit_message_action))
-                    .on_action(cx.listener(Self::stash_all))
-                    .on_action(cx.listener(Self::stash_pop))
             })
             .on_action(cx.listener(Self::select_first))
             .on_action(cx.listener(Self::select_next))

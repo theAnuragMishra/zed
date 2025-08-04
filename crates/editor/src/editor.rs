@@ -51,56 +51,42 @@ mod signature_help;
 pub mod test;
 
 pub(crate) use actions::*;
-pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder};
-pub use editor_settings::{
-    CurrentLineHighlight, DocumentColorsRenderMode, EditorSettings, HideMouseMode,
-    ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ShowMinimap, ShowScrollbar,
-};
-pub use editor_settings_controls::*;
-pub use element::{
-    CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
-};
-pub use git::blame::BlameRenderer;
-pub use hover_popover::hover_markdown_style;
-pub use inline_completion::Direction;
-pub use items::MAX_TAB_TITLE_LEN;
-pub use lsp::CompletionContext;
-pub use lsp_ext::lsp_tasks;
-pub use multi_buffer::{
-    Anchor, AnchorRangeExt, ExcerptId, ExcerptRange, MultiBuffer, MultiBufferSnapshot, PathKey,
-    RowInfo, ToOffset, ToPoint,
-};
-pub use proposed_changes_editor::{
-    ProposedChangeLocation, ProposedChangesEditor, ProposedChangesEditorToolbar,
-};
-pub use text::Bias;
-
-use ::git::{
-    Restore,
-    blame::{BlameEntry, ParsedCommitMessage},
-};
+pub use actions::{AcceptEditPrediction, OpenExcerpts, OpenExcerptsSplit};
 use aho_corasick::AhoCorasick;
 use anyhow::{Context as _, Result, anyhow};
 use blink_manager::BlinkManager;
 use buffer_diff::DiffHunkStatus;
 use client::{Collaborator, DisableAiSettings, ParticipantIndex};
 use clock::{AGENT_REPLICA_ID, ReplicaId};
-use code_context_menus::{
-    AvailableCodeAction, CodeActionContents, CodeActionsItem, CodeActionsMenu, CodeContextMenu,
-    CompletionsMenu, ContextMenuOrigin,
-};
 use collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use convert_case::{Case, Casing};
 use dap::TelemetrySpawnLocation;
 use display_map::*;
+pub use display_map::{ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder};
+pub use editor_settings::{
+    CurrentLineHighlight, DocumentColorsRenderMode, EditorSettings, HideMouseMode,
+    ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ShowScrollbar,
+};
 use editor_settings::{GoToDefinitionFallback, Minimap as MinimapSettings};
+pub use editor_settings_controls::*;
 use element::{AcceptEditPredictionBinding, LineWithInvisibles, PositionMap, layout_line};
+pub use element::{
+    CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
+};
 use futures::{
     FutureExt, StreamExt as _,
     future::{self, Shared, join},
     stream::FuturesUnordered,
 };
 use fuzzy::{StringMatch, StringMatchCandidate};
+use lsp_colors::LspColorData;
+
+use ::git::blame::BlameEntry;
+use ::git::{Restore, blame::ParsedCommitMessage};
+use code_context_menus::{
+    AvailableCodeAction, CodeActionContents, CodeActionsItem, CodeActionsMenu, CodeContextMenu,
+    CompletionsMenu, ContextMenuOrigin,
+};
 use git::blame::{GitBlame, GlobalBlameRenderer};
 use gpui::{
     Action, Animation, AnimationExt, AnyElement, App, AppContext, AsyncWindowContext,
@@ -114,43 +100,32 @@ use gpui::{
 };
 use highlight_matching_bracket::refresh_matching_bracket_highlights;
 use hover_links::{HoverLink, HoveredLinkState, InlayHighlight, find_file};
+pub use hover_popover::hover_markdown_style;
 use hover_popover::{HoverState, hide_hover};
 use indent_guides::ActiveIndentGuidesState;
 use inlay_hint_cache::{InlayHintCache, InlaySplice, InvalidationStrategy};
+pub use inline_completion::Direction;
 use inline_completion::{EditPredictionProvider, InlineCompletionProviderHandle};
+pub use items::MAX_TAB_TITLE_LEN;
 use itertools::Itertools;
 use language::{
-    AutoindentMode, BlockCommentConfig, BracketMatch, BracketPair, Buffer, BufferRow,
-    BufferSnapshot, Capability, CharClassifier, CharKind, CodeLabel, CursorShape, DiagnosticEntry,
-    DiffOptions, EditPredictionsMode, EditPreview, HighlightedText, IndentKind, IndentSize,
-    Language, OffsetRangeExt, Point, Runnable, RunnableRange, Selection, SelectionGoal, TextObject,
-    TransactionId, TreeSitterOptions, WordsQuery,
+    AutoindentMode, BlockCommentConfig, BracketMatch, BracketPair, Buffer, Capability, CharKind,
+    CodeLabel, CursorShape, DiagnosticEntry, DiffOptions, EditPredictionsMode, EditPreview,
+    HighlightedText, IndentKind, IndentSize, Language, OffsetRangeExt, Point, Selection,
+    SelectionGoal, TextObject, TransactionId, TreeSitterOptions, WordsQuery,
     language_settings::{
         self, InlayHintSettings, LspInsertMode, RewrapBehavior, WordsCompletionMode,
         all_language_settings, language_settings,
     },
-    point_from_lsp, point_to_lsp, text_diff_with_options,
+    point_from_lsp, text_diff_with_options,
 };
+use language::{BufferRow, CharClassifier, Runnable, RunnableRange, point_to_lsp};
 use linked_editing_ranges::refresh_linked_ranges;
-use lsp::{
-    CodeActionKind, CompletionItemKind, CompletionTriggerKind, InsertTextFormat, InsertTextMode,
-    LanguageServerId, LanguageServerName,
-};
-use lsp_colors::LspColorData;
 use markdown::Markdown;
 use mouse_context_menu::MouseContextMenu;
-use movement::TextLayoutDetails;
-use multi_buffer::{
-    ExcerptInfo, ExpandExcerptDirection, MultiBufferDiffHunk, MultiBufferPoint, MultiBufferRow,
-    MultiOrSingleBufferOffsetRange, ToOffsetUtf16,
-};
-use parking_lot::Mutex;
 use persistence::DB;
 use project::{
-    BreakpointWithPosition, CodeAction, Completion, CompletionIntent, CompletionResponse,
-    CompletionSource, DocumentHighlight, InlayHint, Location, LocationLink, PrepareRenameResponse,
-    Project, ProjectItem, ProjectPath, ProjectTransaction, TaskSourceKind,
-    debugger::breakpoint_store::Breakpoint,
+    BreakpointWithPosition, CompletionResponse, ProjectPath,
     debugger::{
         breakpoint_store::{
             BreakpointEditAction, BreakpointSessionState, BreakpointState, BreakpointStore,
@@ -159,12 +134,44 @@ use project::{
         session::{Session, SessionEvent},
     },
     git_store::{GitStoreEvent, RepositoryEvent},
-    lsp_store::{CompletionDocumentation, FormatTrigger, LspFormatTarget, OpenLspBufferHandle},
     project_settings::{DiagnosticSeverity, GoToDiagnosticSeverityFilter},
+};
+
+pub use git::blame::BlameRenderer;
+pub use proposed_changes_editor::{
+    ProposedChangeLocation, ProposedChangesEditor, ProposedChangesEditorToolbar,
+};
+use std::{cell::OnceCell, iter::Peekable, ops::Not};
+use task::{ResolvedTask, RunnableTag, TaskTemplate, TaskVariables};
+
+pub use lsp::CompletionContext;
+use lsp::{
+    CodeActionKind, CompletionItemKind, CompletionTriggerKind, InsertTextFormat, InsertTextMode,
+    LanguageServerId, LanguageServerName,
+};
+
+use language::BufferSnapshot;
+pub use lsp_ext::lsp_tasks;
+use movement::TextLayoutDetails;
+pub use multi_buffer::{
+    Anchor, AnchorRangeExt, ExcerptId, ExcerptRange, MultiBuffer, MultiBufferSnapshot, PathKey,
+    RowInfo, ToOffset, ToPoint,
+};
+use multi_buffer::{
+    ExcerptInfo, ExpandExcerptDirection, MultiBufferDiffHunk, MultiBufferPoint, MultiBufferRow,
+    MultiOrSingleBufferOffsetRange, ToOffsetUtf16,
+};
+use parking_lot::Mutex;
+use project::{
+    CodeAction, Completion, CompletionIntent, CompletionSource, DocumentHighlight, InlayHint,
+    Location, LocationLink, PrepareRenameResponse, Project, ProjectItem, ProjectTransaction,
+    TaskSourceKind,
+    debugger::breakpoint_store::Breakpoint,
+    lsp_store::{CompletionDocumentation, FormatTrigger, LspFormatTarget, OpenLspBufferHandle},
     project_settings::{GitGutterSetting, ProjectSettings},
 };
-use rand::{seq::SliceRandom, thread_rng};
-use rpc::{ErrorCode, ErrorExt, proto::PeerId};
+use rand::prelude::*;
+use rpc::{ErrorExt, proto::*};
 use scroll::{Autoscroll, OngoingScroll, ScrollAnchor, ScrollManager, ScrollbarAutoHide};
 use selections_collection::{
     MutableSelectionsCollection, SelectionsCollection, resolve_selections,
@@ -173,24 +180,21 @@ use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsLocation, SettingsStore, update_settings_file};
 use smallvec::{SmallVec, smallvec};
 use snippet::Snippet;
+use std::sync::Arc;
 use std::{
     any::TypeId,
     borrow::Cow,
-    cell::OnceCell,
     cell::RefCell,
     cmp::{self, Ordering, Reverse},
-    iter::Peekable,
     mem,
     num::NonZeroU32,
-    ops::Not,
     ops::{ControlFlow, Deref, DerefMut, Range, RangeInclusive},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
     time::{Duration, Instant},
 };
+pub use sum_tree::Bias;
 use sum_tree::TreeMap;
-use task::{ResolvedTask, RunnableTag, TaskTemplate, TaskVariables};
 use text::{BufferId, FromAnchor, OffsetUtf16, Rope};
 use theme::{
     ActiveTheme, PlayerColor, StatusColors, SyntaxTheme, Theme, ThemeSettings,
@@ -209,11 +213,14 @@ use workspace::{
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
     searchable::SearchEvent,
 };
+use zed_actions;
 
 use crate::{
     code_context_menus::CompletionsMenuSource,
-    editor_settings::MultiCursorModifier,
     hover_links::{find_url, find_url_from_range},
+};
+use crate::{
+    editor_settings::MultiCursorModifier,
     signature_help::{SignatureHelpHiddenBy, SignatureHelpState},
 };
 
@@ -6403,6 +6410,7 @@ impl Editor {
         IconButton::new("inline_code_actions", ui::IconName::BoltFilled)
             .icon_size(icon_size)
             .shape(ui::IconButtonShape::Square)
+            .style(ButtonStyle::Transparent)
             .icon_color(ui::Color::Hidden)
             .toggle_state(is_active)
             .when(show_tooltip, |this| {
@@ -8337,29 +8345,26 @@ impl Editor {
         let color = Color::Muted;
         let position = breakpoint.as_ref().map(|(anchor, _, _)| *anchor);
 
-        IconButton::new(
-            ("run_indicator", row.0 as usize),
-            ui::IconName::PlayOutlined,
-        )
-        .shape(ui::IconButtonShape::Square)
-        .icon_size(IconSize::XSmall)
-        .icon_color(color)
-        .toggle_state(is_active)
-        .on_click(cx.listener(move |editor, e: &ClickEvent, window, cx| {
-            let quick_launch = e.down.button == MouseButton::Left;
-            window.focus(&editor.focus_handle(cx));
-            editor.toggle_code_actions(
-                &ToggleCodeActions {
-                    deployed_from: Some(CodeActionSource::RunMenu(row)),
-                    quick_launch,
-                },
-                window,
-                cx,
-            );
-        }))
-        .on_right_click(cx.listener(move |editor, event: &ClickEvent, window, cx| {
-            editor.set_breakpoint_context_menu(row, position, event.down.position, window, cx);
-        }))
+        IconButton::new(("run_indicator", row.0 as usize), ui::IconName::Play)
+            .shape(ui::IconButtonShape::Square)
+            .icon_size(IconSize::XSmall)
+            .icon_color(color)
+            .toggle_state(is_active)
+            .on_click(cx.listener(move |editor, e: &ClickEvent, window, cx| {
+                let quick_launch = e.down.button == MouseButton::Left;
+                window.focus(&editor.focus_handle(cx));
+                editor.toggle_code_actions(
+                    &ToggleCodeActions {
+                        deployed_from: Some(CodeActionSource::RunMenu(row)),
+                        quick_launch,
+                    },
+                    window,
+                    cx,
+                );
+            }))
+            .on_right_click(cx.listener(move |editor, event: &ClickEvent, window, cx| {
+                editor.set_breakpoint_context_menu(row, position, event.down.position, window, cx);
+            }))
     }
 
     pub fn context_menu_visible(&self) -> bool {
@@ -10901,6 +10906,17 @@ impl Editor {
         });
     }
 
+    pub fn toggle_case(&mut self, _: &ToggleCase, window: &mut Window, cx: &mut Context<Self>) {
+        self.manipulate_text(window, cx, |text| {
+            let has_upper_case_characters = text.chars().any(|c| c.is_uppercase());
+            if has_upper_case_characters {
+                text.to_lowercase()
+            } else {
+                text.to_uppercase()
+            }
+        })
+    }
+
     fn manipulate_immutable_lines<Fn>(
         &mut self,
         window: &mut Window,
@@ -11153,26 +11169,6 @@ impl Editor {
                     }
                     t
                 })
-        })
-    }
-
-    pub fn convert_to_sentence_case(
-        &mut self,
-        _: &ConvertToSentenceCase,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.manipulate_text(window, cx, |text| text.to_case(Case::Sentence))
-    }
-
-    pub fn toggle_case(&mut self, _: &ToggleCase, window: &mut Window, cx: &mut Context<Self>) {
-        self.manipulate_text(window, cx, |text| {
-            let has_upper_case_characters = text.chars().any(|c| c.is_uppercase());
-            if has_upper_case_characters {
-                text.to_lowercase()
-            } else {
-                text.to_uppercase()
-            }
         })
     }
 
@@ -17000,7 +16996,7 @@ impl Editor {
         now: Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<TransactionId> {
+    ) {
         self.end_selection(window, cx);
         if let Some(tx_id) = self
             .buffer
@@ -17010,10 +17006,7 @@ impl Editor {
                 .insert_transaction(tx_id, self.selections.disjoint_anchors());
             cx.emit(EditorEvent::TransactionBegun {
                 transaction_id: tx_id,
-            });
-            Some(tx_id)
-        } else {
-            None
+            })
         }
     }
 
@@ -17039,17 +17032,6 @@ impl Editor {
         } else {
             None
         }
-    }
-
-    pub fn modify_transaction_selection_history(
-        &mut self,
-        transaction_id: TransactionId,
-        modify: impl FnOnce(&mut (Arc<[Selection<Anchor>]>, Option<Arc<[Selection<Anchor>]>>)),
-    ) -> bool {
-        self.selection_history
-            .transaction_mut(transaction_id)
-            .map(modify)
-            .is_some()
     }
 
     pub fn set_mark(&mut self, _: &actions::SetMark, window: &mut Window, cx: &mut Context<Self>) {
@@ -21124,6 +21106,13 @@ fn process_completion_for_edit(
                     .is_le(),
                 "replace_range should start before or at cursor position"
             );
+            debug_assert!(
+                insert_range
+                    .end
+                    .cmp(&cursor_position, &buffer_snapshot)
+                    .is_le(),
+                "insert_range should end before or at cursor position"
+            );
 
             let should_replace = match intent {
                 CompletionIntent::CompleteWithInsert => false,
@@ -22297,7 +22286,7 @@ fn consume_contiguous_rows(
     selections: &mut Peekable<std::slice::Iter<Selection<Point>>>,
 ) -> (MultiBufferRow, MultiBufferRow) {
     contiguous_row_selections.push(selection.clone());
-    let start_row = starting_row(selection, display_map);
+    let start_row = MultiBufferRow(selection.start.row);
     let mut end_row = ending_row(selection, display_map);
 
     while let Some(next_selection) = selections.peek() {
@@ -22309,14 +22298,6 @@ fn consume_contiguous_rows(
         }
     }
     (start_row, end_row)
-}
-
-fn starting_row(selection: &Selection<Point>, display_map: &DisplaySnapshot) -> MultiBufferRow {
-    if selection.start.column > 0 {
-        MultiBufferRow(display_map.prev_line_boundary(selection.start).0.row)
-    } else {
-        MultiBufferRow(selection.start.row)
-    }
 }
 
 fn ending_row(next_selection: &Selection<Point>, display_map: &DisplaySnapshot) -> MultiBufferRow {

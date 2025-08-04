@@ -284,7 +284,6 @@ fn update_command_palette_filter(cx: &mut App) {
         } else {
             filter.show_namespace("agent");
             filter.show_namespace("assistant");
-            filter.show_namespace("copilot");
             filter.show_namespace("zed_predict_onboarding");
 
             filter.show_namespace("edit_prediction");

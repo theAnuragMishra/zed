@@ -38,7 +38,7 @@ pub enum CellControlType {
 impl CellControlType {
     fn icon_name(&self) -> IconName {
         match self {
-            CellControlType::RunCell => IconName::PlayOutlined,
+            CellControlType::RunCell => IconName::Play,
             CellControlType::RerunCell => IconName::ArrowCircle,
             CellControlType::ClearCell => IconName::ListX,
             CellControlType::CellOptions => IconName::Ellipsis,

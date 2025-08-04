@@ -148,7 +148,7 @@ impl ContextPickerMode {
             Self::File => IconName::File,
             Self::Symbol => IconName::Code,
             Self::Fetch => IconName::Globe,
-            Self::Thread => IconName::Thread,
+            Self::Thread => IconName::MessageBubbles,
             Self::Rules => RULES_ICON,
         }
     }

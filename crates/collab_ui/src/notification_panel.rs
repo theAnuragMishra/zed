@@ -634,13 +634,13 @@ impl Render for NotificationPanel {
                     .child(Icon::new(IconName::Envelope)),
             )
             .map(|this| {
-                if !self.client.status().borrow().is_connected() {
+                if self.client.user_id().is_none() {
                     this.child(
                         v_flex()
                             .gap_2()
                             .p_4()
                             .child(
-                                Button::new("connect_prompt_button", "Connect")
+                                Button::new("sign_in_prompt_button", "Sign in")
                                     .icon_color(Color::Muted)
                                     .icon(IconName::Github)
                                     .icon_position(IconPosition::Start)
@@ -652,7 +652,10 @@ impl Render for NotificationPanel {
                                             let client = client.clone();
                                             window
                                                 .spawn(cx, async move |cx| {
-                                                    match client.connect(true, &cx).await {
+                                                    match client
+                                                        .authenticate_and_connect(true, &cx)
+                                                        .await
+                                                    {
                                                         util::ConnectionResult::Timeout => {
                                                             log::error!("Connection timeout");
                                                         }
@@ -670,7 +673,7 @@ impl Render for NotificationPanel {
                             )
                             .child(
                                 div().flex().w_full().items_center().child(
-                                    Label::new("Connect to view notifications.")
+                                    Label::new("Sign in to view notifications.")
                                         .color(Color::Muted)
                                         .size(LabelSize::Small),
                                 ),

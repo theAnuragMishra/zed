@@ -44,7 +44,6 @@ use assistant_context::{AssistantContext, ContextEvent, ContextSummary};
 use assistant_slash_command::SlashCommandWorkingSet;
 use assistant_tool::ToolWorkingSet;
 use client::{DisableAiSettings, UserStore, zed_urls};
-use cloud_llm_client::{CompletionIntent, Plan, UsageLimit};
 use editor::{Anchor, AnchorRangeExt as _, Editor, EditorEvent, MultiBuffer};
 use feature_flags::{self, FeatureFlagAppExt};
 use fs::Fs;
@@ -60,6 +59,7 @@ use language_model::{
 };
 use project::{Project, ProjectPath, Worktree};
 use prompt_store::{PromptBuilder, PromptStore, UserPromptId};
+use proto::Plan;
 use rules_library::{RulesLibrary, open_rules_library};
 use search::{BufferSearchBar, buffer_search};
 use settings::{Settings, update_settings_file};
@@ -77,9 +77,10 @@ use workspace::{
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
-    agent::{OpenOnboardingModal, OpenSettings, ResetOnboarding, ToggleModelSelector},
+    agent::{OpenConfiguration, OpenOnboardingModal, ResetOnboarding, ToggleModelSelector},
     assistant::{OpenRulesLibrary, ToggleFocus},
 };
+use zed_llm_client::{CompletionIntent, UsageLimit};
 
 const AGENT_PANEL_KEY: &str = "agent_panel";
 
@@ -104,7 +105,7 @@ pub fn init(cx: &mut App) {
                         panel.update(cx, |panel, cx| panel.open_history(window, cx));
                     }
                 })
-                .register_action(|workspace, _: &OpenSettings, window, cx| {
+                .register_action(|workspace, _: &OpenConfiguration, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         workspace.focus_panel::<AgentPanel>(window, cx);
                         panel.update(cx, |panel, cx| panel.open_configuration(window, cx));
@@ -439,7 +440,7 @@ pub struct AgentPanel {
     local_timezone: UtcOffset,
     active_view: ActiveView,
     acp_message_history:
-        Rc<RefCell<crate::acp::MessageHistory<Vec<agent_client_protocol::ContentBlock>>>>,
+        Rc<RefCell<crate::acp::MessageHistory<agentic_coding_protocol::SendUserMessageParams>>>,
     previous_view: Option<ActiveView>,
     history_store: Entity<HistoryStore>,
     history: Entity<ThreadHistory>,
@@ -578,6 +579,7 @@ impl AgentPanel {
             MessageEditor::new(
                 fs.clone(),
                 workspace.clone(),
+                user_store.clone(),
                 message_editor_context_store.clone(),
                 prompt_store.clone(),
                 thread_store.downgrade(),
@@ -846,6 +848,7 @@ impl AgentPanel {
             MessageEditor::new(
                 self.fs.clone(),
                 self.workspace.clone(),
+                self.user_store.clone(),
                 context_store.clone(),
                 self.prompt_store.clone(),
                 self.thread_store.downgrade(),
@@ -1119,6 +1122,7 @@ impl AgentPanel {
             MessageEditor::new(
                 self.fs.clone(),
                 self.workspace.clone(),
+                self.user_store.clone(),
                 context_store,
                 self.prompt_store.clone(),
                 self.thread_store.downgrade(),
@@ -1911,6 +1915,27 @@ impl AgentPanel {
                             .when(cx.has_flag::<feature_flags::AcpFeatureFlag>(), |this| {
                                 this.header("Zed Agent")
                             })
+                            .item(
+                                ContextMenuEntry::new("New Thread")
+                                    .icon(IconName::NewThread)
+                                    .icon_color(Color::Muted)
+                                    .action(NewThread::default().boxed_clone())
+                                    .handler(move |window, cx| {
+                                        window.dispatch_action(
+                                            NewThread::default().boxed_clone(),
+                                            cx,
+                                        );
+                                    }),
+                            )
+                            .item(
+                                ContextMenuEntry::new("New Text Thread")
+                                    .icon(IconName::NewTextThread)
+                                    .icon_color(Color::Muted)
+                                    .action(NewTextThread.boxed_clone())
+                                    .handler(move |window, cx| {
+                                        window.dispatch_action(NewTextThread.boxed_clone(), cx);
+                                    }),
+                            )
                             .when_some(active_thread, |this, active_thread| {
                                 let thread = active_thread.read(cx);
 
@@ -1918,7 +1943,7 @@ impl AgentPanel {
                                     let thread_id = thread.id().clone();
                                     this.item(
                                         ContextMenuEntry::new("New From Summary")
-                                            .icon(IconName::ThreadFromSummary)
+                                            .icon(IconName::NewFromSummary)
                                             .icon_color(Color::Muted)
                                             .handler(move |window, cx| {
                                                 window.dispatch_action(
@@ -1933,27 +1958,6 @@ impl AgentPanel {
                                     this
                                 }
                             })
-                            .item(
-                                ContextMenuEntry::new("New Thread")
-                                    .icon(IconName::Thread)
-                                    .icon_color(Color::Muted)
-                                    .action(NewThread::default().boxed_clone())
-                                    .handler(move |window, cx| {
-                                        window.dispatch_action(
-                                            NewThread::default().boxed_clone(),
-                                            cx,
-                                        );
-                                    }),
-                            )
-                            .item(
-                                ContextMenuEntry::new("New Text Thread")
-                                    .icon(IconName::TextThread)
-                                    .icon_color(Color::Muted)
-                                    .action(NewTextThread.boxed_clone())
-                                    .handler(move |window, cx| {
-                                        window.dispatch_action(NewTextThread.boxed_clone(), cx);
-                                    }),
-                            )
                             .when(cx.has_flag::<feature_flags::AcpFeatureFlag>(), |this| {
                                 this.separator()
                                     .header("External Agents")
@@ -2012,69 +2016,65 @@ impl AgentPanel {
             )
             .anchor(Corner::TopRight)
             .with_handle(self.agent_panel_menu_handle.clone())
-            .menu({
-                let focus_handle = focus_handle.clone();
-                move |window, cx| {
-                    Some(ContextMenu::build(window, cx, |mut menu, _window, _| {
-                        menu = menu.context(focus_handle.clone());
-                        if let Some(usage) = usage {
-                            menu = menu
-                                .header_with_link("Prompt Usage", "Manage", account_url.clone())
-                                .custom_entry(
-                                    move |_window, cx| {
-                                        let used_percentage = match usage.limit {
-                                            UsageLimit::Limited(limit) => {
-                                                Some((usage.amount as f32 / limit as f32) * 100.)
-                                            }
-                                            UsageLimit::Unlimited => None,
-                                        };
-
-                                        h_flex()
-                                            .flex_1()
-                                            .gap_1p5()
-                                            .children(used_percentage.map(|percent| {
-                                                ProgressBar::new("usage", percent, 100., cx)
-                                            }))
-                                            .child(
-                                                Label::new(match usage.limit {
-                                                    UsageLimit::Limited(limit) => {
-                                                        format!("{} / {limit}", usage.amount)
-                                                    }
-                                                    UsageLimit::Unlimited => {
-                                                        format!("{} / ∞", usage.amount)
-                                                    }
-                                                })
-                                                .size(LabelSize::Small)
-                                                .color(Color::Muted),
-                                            )
-                                            .into_any_element()
-                                    },
-                                    move |_, cx| cx.open_url(&zed_urls::account_url(cx)),
-                                )
-                                .separator()
-                        }
-
+            .menu(move |window, cx| {
+                Some(ContextMenu::build(window, cx, |mut menu, _window, _| {
+                    if let Some(usage) = usage {
                         menu = menu
-                            .header("MCP Servers")
-                            .action(
-                                "View Server Extensions",
-                                Box::new(zed_actions::Extensions {
-                                    category_filter: Some(
-                                        zed_actions::ExtensionCategoryFilter::ContextServers,
-                                    ),
-                                    id: None,
-                                }),
+                            .header_with_link("Prompt Usage", "Manage", account_url.clone())
+                            .custom_entry(
+                                move |_window, cx| {
+                                    let used_percentage = match usage.limit {
+                                        UsageLimit::Limited(limit) => {
+                                            Some((usage.amount as f32 / limit as f32) * 100.)
+                                        }
+                                        UsageLimit::Unlimited => None,
+                                    };
+
+                                    h_flex()
+                                        .flex_1()
+                                        .gap_1p5()
+                                        .children(used_percentage.map(|percent| {
+                                            ProgressBar::new("usage", percent, 100., cx)
+                                        }))
+                                        .child(
+                                            Label::new(match usage.limit {
+                                                UsageLimit::Limited(limit) => {
+                                                    format!("{} / {limit}", usage.amount)
+                                                }
+                                                UsageLimit::Unlimited => {
+                                                    format!("{} / ∞", usage.amount)
+                                                }
+                                            })
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                        )
+                                        .into_any_element()
+                                },
+                                move |_, cx| cx.open_url(&zed_urls::account_url(cx)),
                             )
-                            .action("Add Custom Server…", Box::new(AddContextServer))
-                            .separator();
+                            .separator()
+                    }
 
-                        menu = menu
-                            .action("Rules…", Box::new(OpenRulesLibrary::default()))
-                            .action("Settings", Box::new(OpenSettings))
-                            .action(zoom_in_label, Box::new(ToggleZoom));
-                        menu
-                    }))
-                }
+                    menu = menu
+                        .header("MCP Servers")
+                        .action(
+                            "View Server Extensions",
+                            Box::new(zed_actions::Extensions {
+                                category_filter: Some(
+                                    zed_actions::ExtensionCategoryFilter::ContextServers,
+                                ),
+                                id: None,
+                            }),
+                        )
+                        .action("Add Custom Server…", Box::new(AddContextServer))
+                        .separator();
+
+                    menu = menu
+                        .action("Rules…", Box::new(OpenRulesLibrary::default()))
+                        .action("Settings", Box::new(OpenConfiguration))
+                        .action(zoom_in_label, Box::new(ToggleZoom));
+                    menu
+                }))
             });
 
         h_flex()
@@ -2275,10 +2275,10 @@ impl AgentPanel {
             | ActiveView::Configuration => return false,
         }
 
-        let plan = self.user_store.read(cx).plan();
+        let plan = self.user_store.read(cx).current_plan();
         let has_previous_trial = self.user_store.read(cx).trial_started_at().is_some();
 
-        matches!(plan, Some(Plan::ZedFree)) && has_previous_trial
+        matches!(plan, Some(Plan::Free)) && has_previous_trial
     }
 
     fn should_render_onboarding(&self, cx: &mut Context<Self>) -> bool {
@@ -2464,14 +2464,14 @@ impl AgentPanel {
                                                 .icon_color(Color::Muted)
                                                 .full_width()
                                                 .key_binding(KeyBinding::for_action_in(
-                                                    &OpenSettings,
+                                                    &OpenConfiguration,
                                                     &focus_handle,
                                                     window,
                                                     cx,
                                                 ))
                                                 .on_click(|_event, window, cx| {
                                                     window.dispatch_action(
-                                                        OpenSettings.boxed_clone(),
+                                                        OpenConfiguration.boxed_clone(),
                                                         cx,
                                                     )
                                                 }),
@@ -2558,7 +2558,7 @@ impl AgentPanel {
                                         NewThreadButton::new(
                                             "new-thread-btn",
                                             "New Thread",
-                                            IconName::Thread,
+                                            IconName::NewThread,
                                         )
                                         .keybinding(KeyBinding::for_action_in(
                                             &NewThread::default(),
@@ -2579,7 +2579,7 @@ impl AgentPanel {
                                         NewThreadButton::new(
                                             "new-text-thread-btn",
                                             "New Text Thread",
-                                            IconName::TextThread,
+                                            IconName::NewTextThread,
                                         )
                                         .keybinding(KeyBinding::for_action_in(
                                             &NewTextThread,
@@ -2676,11 +2676,16 @@ impl AgentPanel {
                         .style(ButtonStyle::Tinted(ui::TintColor::Warning))
                         .label_size(LabelSize::Small)
                         .key_binding(
-                            KeyBinding::for_action_in(&OpenSettings, &focus_handle, window, cx)
-                                .map(|kb| kb.size(rems_from_px(12.))),
+                            KeyBinding::for_action_in(
+                                &OpenConfiguration,
+                                &focus_handle,
+                                window,
+                                cx,
+                            )
+                            .map(|kb| kb.size(rems_from_px(12.))),
                         )
                         .on_click(|_event, window, cx| {
-                            window.dispatch_action(OpenSettings.boxed_clone(), cx)
+                            window.dispatch_action(OpenConfiguration.boxed_clone(), cx)
                         }),
                 ),
             ConfigurationError::ProviderPendingTermsAcceptance(provider) => {
@@ -2874,7 +2879,7 @@ impl AgentPanel {
     ) -> AnyElement {
         let error_message = match plan {
             Plan::ZedPro => "Upgrade to usage-based billing for more prompts.",
-            Plan::ZedProTrial | Plan::ZedFree => "Upgrade to Zed Pro for more prompts.",
+            Plan::ZedProTrial | Plan::Free => "Upgrade to Zed Pro for more prompts.",
         };
 
         let icon = Icon::new(IconName::XCircle)
@@ -3184,7 +3189,7 @@ impl Render for AgentPanel {
             .on_action(cx.listener(|this, _: &OpenHistory, window, cx| {
                 this.open_history(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+            .on_action(cx.listener(|this, _: &OpenConfiguration, window, cx| {
                 this.open_configuration(window, cx);
             }))
             .on_action(cx.listener(Self::open_active_thread_as_markdown))
