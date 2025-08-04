@@ -77,7 +77,7 @@ impl Render for IconButtonStory {
 
         let with_tooltip_button = StoryItem::new(
             "With `tooltip`",
-            IconButton::new("with_tooltip_button", IconName::Chat)
+            IconButton::new("with_tooltip_button", IconName::MessageBubbles)
                 .tooltip(Tooltip::text("Open messages")),
         )
         .description("Displays an icon button that has a tooltip when hovered.")

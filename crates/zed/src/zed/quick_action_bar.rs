@@ -192,7 +192,7 @@ impl Render for QuickActionBar {
             };
             v_flex()
                 .child(
-                    IconButton::new("toggle_code_actions_icon", IconName::BoltOutlined)
+                    IconButton::new("toggle_code_actions_icon", IconName::Bolt)
                         .icon_size(IconSize::Small)
                         .style(ButtonStyle::Subtle)
                         .disabled(!has_available_code_actions)

@@ -1362,7 +1362,10 @@ impl Project {
         fs: Arc<dyn Fs>,
         cx: AsyncApp,
     ) -> Result<Entity<Self>> {
-        client.connect(true, &cx).await.into_response()?;
+        client
+            .authenticate_and_connect(true, &cx)
+            .await
+            .into_response()?;
 
         let subscriptions = [
             EntitySubscription::Project(client.subscribe_to_entity::<Self>(remote_id)?),
@@ -3369,7 +3372,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.definitions(buffer, position, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result
@@ -3387,7 +3390,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.declarations(buffer, position, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result
@@ -3405,7 +3408,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.type_definitions(buffer, position, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result
@@ -3423,7 +3426,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.implementations(buffer, position, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result
@@ -3441,7 +3444,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.references(buffer, position, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result
@@ -3993,7 +3996,7 @@ impl Project {
         let task = self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.request_lsp(buffer_handle, server, request, cx)
         });
-        cx.background_spawn(async move {
+        cx.spawn(async move |_, _| {
             let result = task.await;
             drop(guard);
             result

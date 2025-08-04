@@ -308,13 +308,13 @@ pub struct GetSubscriptionResponse {
     pub usage: Option<CurrentUsage>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CurrentUsage {
     pub model_requests: UsageData,
     pub edit_predictions: UsageData,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UsageData {
     pub used: u32,
     pub limit: UsageLimit,

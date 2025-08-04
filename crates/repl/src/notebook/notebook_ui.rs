@@ -343,7 +343,7 @@ impl NotebookEditor {
                             .child(
                                 Self::render_notebook_control(
                                     "run-all-cells",
-                                    IconName::PlayOutlined,
+                                    IconName::Play,
                                     window,
                                     cx,
                                 )

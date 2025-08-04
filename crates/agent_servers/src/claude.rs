@@ -70,6 +70,10 @@ struct ClaudeAgentConnection {
 }
 
 impl AgentConnection for ClaudeAgentConnection {
+    fn name(&self) -> &'static str {
+        ClaudeCode.name()
+    }
+
     fn new_thread(
         self: Rc<Self>,
         project: Entity<Project>,
@@ -164,9 +168,8 @@ impl AgentConnection for ClaudeAgentConnection {
                 }
             });
 
-            let thread = cx.new(|cx| {
-                AcpThread::new("Claude Code", self.clone(), project, session_id.clone(), cx)
-            })?;
+            let thread =
+                cx.new(|cx| AcpThread::new(self.clone(), project, session_id.clone(), cx))?;
 
             thread_tx.send(thread.downgrade())?;
 
@@ -183,15 +186,11 @@ impl AgentConnection for ClaudeAgentConnection {
         })
     }
 
-    fn auth_methods(&self) -> &[acp::AuthMethod] {
-        &[]
-    }
-
-    fn authenticate(&self, _: acp::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
+    fn authenticate(&self, _cx: &mut App) -> Task<Result<()>> {
         Task::ready(Err(anyhow!("Authentication not supported")))
     }
 
-    fn prompt(&self, params: acp::PromptRequest, cx: &mut App) -> Task<Result<()>> {
+    fn prompt(&self, params: acp::PromptArguments, cx: &mut App) -> Task<Result<()>> {
         let sessions = self.sessions.borrow();
         let Some(session) = sessions.get(&params.session_id) else {
             return Task::ready(Err(anyhow!(

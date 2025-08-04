@@ -1,12 +1,14 @@
-mod acp;
 mod claude;
+mod codex;
 mod gemini;
+mod mcp_server;
 mod settings;
 
 #[cfg(test)]
 mod e2e_tests;
 
 pub use claude::*;
+pub use codex::*;
 pub use gemini::*;
 pub use settings::*;
 
@@ -36,6 +38,7 @@ pub trait AgentServer: Send {
 
     fn connect(
         &self,
+        // these will go away when old_acp is fully removed
         root_dir: &Path,
         project: &Entity<Project>,
         cx: &mut App,

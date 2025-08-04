@@ -3580,18 +3580,6 @@ impl LspCommand for GetCodeLens {
     }
 }
 
-impl LinkedEditingRange {
-    pub fn check_server_capabilities(capabilities: ServerCapabilities) -> bool {
-        let Some(linked_editing_options) = capabilities.linked_editing_range_provider else {
-            return false;
-        };
-        if let LinkedEditingRangeServerCapabilities::Simple(false) = linked_editing_options {
-            return false;
-        }
-        true
-    }
-}
-
 #[async_trait(?Send)]
 impl LspCommand for LinkedEditingRange {
     type Response = Vec<Range<Anchor>>;
@@ -3603,7 +3591,16 @@ impl LspCommand for LinkedEditingRange {
     }
 
     fn check_capabilities(&self, capabilities: AdapterServerCapabilities) -> bool {
-        Self::check_server_capabilities(capabilities.server_capabilities)
+        let Some(linked_editing_options) = &capabilities
+            .server_capabilities
+            .linked_editing_range_provider
+        else {
+            return false;
+        };
+        if let LinkedEditingRangeServerCapabilities::Simple(false) = linked_editing_options {
+            return false;
+        }
+        true
     }
 
     fn to_lsp(

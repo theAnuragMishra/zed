@@ -18,7 +18,7 @@ use collections::{HashMap, HashSet};
 use extension::ExtensionHostProxy;
 use futures::future;
 use gpui::http_client::read_proxy_from_env;
-use gpui::{App, AppContext, Application, AsyncApp, Entity, UpdateGlobal};
+use gpui::{App, AppContext, Application, AsyncApp, Entity, SemanticVersion, UpdateGlobal};
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
 use language_model::{ConfiguredModel, LanguageModel, LanguageModelRegistry, SelectedModel};
@@ -337,8 +337,7 @@ pub struct AgentAppState {
 }
 
 pub fn init(cx: &mut App) -> Arc<AgentAppState> {
-    let app_version = AppVersion::global(cx);
-    release_channel::init(app_version, cx);
+    release_channel::init(SemanticVersion::default(), cx);
     gpui_tokio::init(cx);
 
     let mut settings_store = SettingsStore::new(cx);
@@ -351,7 +350,7 @@ pub fn init(cx: &mut App) -> Arc<AgentAppState> {
     // Set User-Agent so we can download language servers from GitHub
     let user_agent = format!(
         "Zed/{} ({}; {})",
-        app_version,
+        AppVersion::global(cx),
         std::env::consts::OS,
         std::env::consts::ARCH
     );

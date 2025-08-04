@@ -1521,9 +1521,6 @@ impl AgentDiff {
                     self.update_reviewing_editors(workspace, window, cx);
                 }
             }
-            AcpThreadEvent::Stopped
-            | AcpThreadEvent::ToolAuthorizationRequired
-            | AcpThreadEvent::Error => {}
         }
     }
 

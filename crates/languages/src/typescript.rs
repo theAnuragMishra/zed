@@ -8,8 +8,7 @@ use futures::future::join_all;
 use gpui::{App, AppContext, AsyncApp, Task};
 use http_client::github::{AssetKind, GitHubLspBinaryVersion, build_asset_url};
 use language::{
-    ContextLocation, ContextProvider, File, LanguageName, LanguageToolchainStore, LspAdapter,
-    LspAdapterDelegate,
+    ContextLocation, ContextProvider, File, LanguageToolchainStore, LspAdapter, LspAdapterDelegate,
 };
 use lsp::{CodeActionKind, LanguageServerBinary, LanguageServerName};
 use node_runtime::NodeRuntime;
@@ -742,11 +741,11 @@ impl LspAdapter for TypeScriptLspAdapter {
         }))
     }
 
-    fn language_ids(&self) -> HashMap<LanguageName, String> {
+    fn language_ids(&self) -> HashMap<String, String> {
         HashMap::from_iter([
-            (LanguageName::new("TypeScript"), "typescript".into()),
-            (LanguageName::new("JavaScript"), "javascript".into()),
-            (LanguageName::new("TSX"), "typescriptreact".into()),
+            ("TypeScript".into(), "typescript".into()),
+            ("JavaScript".into(), "javascript".into()),
+            ("TSX".into(), "typescriptreact".into()),
         ])
     }
 }

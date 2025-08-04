@@ -441,12 +441,14 @@ impl Client {
         Ok(())
     }
 
-    pub fn on_notification(
-        &self,
-        method: &'static str,
-        f: Box<dyn 'static + Send + FnMut(Value, AsyncApp)>,
-    ) {
-        self.notification_handlers.lock().insert(method, f);
+    #[allow(unused)]
+    pub fn on_notification<F>(&self, method: &'static str, f: F)
+    where
+        F: 'static + Send + FnMut(Value, AsyncApp),
+    {
+        self.notification_handlers
+            .lock()
+            .insert(method, Box::new(f));
     }
 }
 

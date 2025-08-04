@@ -9,7 +9,6 @@ pub use agent_api_keys_onboarding::{ApiKeysWithProviders, ApiKeysWithoutProvider
 pub use agent_panel_onboarding_card::AgentPanelOnboardingCard;
 pub use agent_panel_onboarding_content::AgentPanelOnboarding;
 pub use ai_upsell_card::AiUpsellCard;
-use cloud_llm_client::Plan;
 pub use edit_prediction_onboarding_content::EditPredictionOnboarding;
 pub use young_account_banner::YoungAccountBanner;
 
@@ -80,7 +79,7 @@ impl From<client::Status> for SignInStatus {
 pub struct ZedAiOnboarding {
     pub sign_in_status: SignInStatus,
     pub has_accepted_terms_of_service: bool,
-    pub plan: Option<Plan>,
+    pub plan: Option<proto::Plan>,
     pub account_too_young: bool,
     pub continue_with_zed_ai: Arc<dyn Fn(&mut Window, &mut App)>,
     pub sign_in: Arc<dyn Fn(&mut Window, &mut App)>,
@@ -100,8 +99,8 @@ impl ZedAiOnboarding {
 
         Self {
             sign_in_status: status.into(),
-            has_accepted_terms_of_service: store.has_accepted_terms_of_service(),
-            plan: store.plan(),
+            has_accepted_terms_of_service: store.current_user_has_accepted_terms().unwrap_or(false),
+            plan: store.current_plan(),
             account_too_young: store.account_too_young(),
             continue_with_zed_ai,
             accept_terms_of_service: Arc::new({
@@ -114,9 +113,11 @@ impl ZedAiOnboarding {
             sign_in: Arc::new(move |_window, cx| {
                 cx.spawn({
                     let client = client.clone();
-                    async move |cx| client.sign_in_with_optional_connect(true, cx).await
+                    async move |cx| {
+                        client.authenticate_and_connect(true, cx).await;
+                    }
                 })
-                .detach_and_log_err(cx);
+                .detach();
             }),
             dismiss_onboarding: None,
         }
@@ -410,9 +411,9 @@ impl RenderOnce for ZedAiOnboarding {
         if matches!(self.sign_in_status, SignInStatus::SignedIn) {
             if self.has_accepted_terms_of_service {
                 match self.plan {
-                    None | Some(Plan::ZedFree) => self.render_free_plan_state(cx),
-                    Some(Plan::ZedProTrial) => self.render_trial_state(cx),
-                    Some(Plan::ZedPro) => self.render_pro_plan_state(cx),
+                    None | Some(proto::Plan::Free) => self.render_free_plan_state(cx),
+                    Some(proto::Plan::ZedProTrial) => self.render_trial_state(cx),
+                    Some(proto::Plan::ZedPro) => self.render_pro_plan_state(cx),
                 }
             } else {
                 self.render_accept_terms_of_service()
@@ -432,7 +433,7 @@ impl Component for ZedAiOnboarding {
         fn onboarding(
             sign_in_status: SignInStatus,
             has_accepted_terms_of_service: bool,
-            plan: Option<Plan>,
+            plan: Option<proto::Plan>,
             account_too_young: bool,
         ) -> AnyElement {
             ZedAiOnboarding {
@@ -467,15 +468,25 @@ impl Component for ZedAiOnboarding {
                     ),
                     single_example(
                         "Free Plan",
-                        onboarding(SignInStatus::SignedIn, true, Some(Plan::ZedFree), false),
+                        onboarding(SignInStatus::SignedIn, true, Some(proto::Plan::Free), false),
                     ),
                     single_example(
                         "Pro Trial",
-                        onboarding(SignInStatus::SignedIn, true, Some(Plan::ZedProTrial), false),
+                        onboarding(
+                            SignInStatus::SignedIn,
+                            true,
+                            Some(proto::Plan::ZedProTrial),
+                            false,
+                        ),
                     ),
                     single_example(
                         "Pro Plan",
-                        onboarding(SignInStatus::SignedIn, true, Some(Plan::ZedPro), false),
+                        onboarding(
+                            SignInStatus::SignedIn,
+                            true,
+                            Some(proto::Plan::ZedPro),
+                            false,
+                        ),
                     ),
                 ])
                 .into_any_element(),

@@ -115,11 +115,10 @@ impl InitializedContextServerProtocol {
         self.inner.notify(T::METHOD, params)
     }
 
-    pub fn on_notification(
-        &self,
-        method: &'static str,
-        f: Box<dyn 'static + Send + FnMut(Value, AsyncApp)>,
-    ) {
+    pub fn on_notification<F>(&self, method: &'static str, f: F)
+    where
+        F: 'static + Send + FnMut(Value, AsyncApp),
+    {
         self.inner.on_notification(method, f);
     }
 }

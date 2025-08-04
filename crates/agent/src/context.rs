@@ -42,8 +42,8 @@ impl ContextKind {
             ContextKind::Symbol => IconName::Code,
             ContextKind::Selection => IconName::Context,
             ContextKind::FetchedUrl => IconName::Globe,
-            ContextKind::Thread => IconName::Thread,
-            ContextKind::TextThread => IconName::TextThread,
+            ContextKind::Thread => IconName::MessageBubbles,
+            ContextKind::TextThread => IconName::MessageBubbles,
             ContextKind::Rules => RULES_ICON,
             ContextKind::Image => IconName::Image,
         }
