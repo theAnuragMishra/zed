@@ -55,9 +55,9 @@ use itertools::Itertools as _;
 use language::{
     Bias, BinaryStatus, Buffer, BufferSnapshot, CachedLspAdapter, CodeLabel, Diagnostic,
     DiagnosticEntry, DiagnosticSet, DiagnosticSourceKind, Diff, File as _, Language, LanguageName,
-    LanguageRegistry, LocalFile, LspAdapter, LspAdapterDelegate, ManifestDelegate, ManifestName,
-    Patch, PointUtf16, TextBufferSnapshot, ToOffset, ToPointUtf16, Toolchain, Transaction,
-    Unclipped,
+    LanguageRegistry, LocalFile, LspAdapter, LspAdapterDelegate, LspInstaller, ManifestDelegate,
+    ManifestName, Patch, PointUtf16, TextBufferSnapshot, ToOffset, ToPointUtf16, Toolchain,
+    Transaction, Unclipped,
     language_settings::{
         FormatOnSave, Formatter, LanguageSettings, SelectedFormatter, language_settings,
     },
@@ -92,7 +92,6 @@ use sha2::{Digest, Sha256};
 use smol::channel::Sender;
 use snippet::Snippet;
 use std::{
-    any::Any,
     borrow::Cow,
     cell::RefCell,
     cmp::{Ordering, Reverse},
@@ -12773,6 +12772,39 @@ impl SshLspAdapter {
     }
 }
 
+impl LspInstaller for SshLspAdapter {
+    type BinaryVersion = ();
+    async fn check_if_user_installed(
+        &self,
+        _: &dyn LspAdapterDelegate,
+        _: Option<Toolchain>,
+        _: &AsyncApp,
+    ) -> Option<LanguageServerBinary> {
+        Some(self.binary.clone())
+    }
+
+    async fn cached_server_binary(
+        &self,
+        _: PathBuf,
+        _: &dyn LspAdapterDelegate,
+    ) -> Option<LanguageServerBinary> {
+        None
+    }
+
+    async fn fetch_latest_server_version(&self, _: &dyn LspAdapterDelegate) -> Result<()> {
+        anyhow::bail!("SshLspAdapter does not support fetch_latest_server_version")
+    }
+
+    async fn fetch_server_binary(
+        &self,
+        _: (),
+        _: PathBuf,
+        _: &dyn LspAdapterDelegate,
+    ) -> Result<LanguageServerBinary> {
+        anyhow::bail!("SshLspAdapter does not support fetch_server_binary")
+    }
+}
+
 #[async_trait(?Send)]
 impl LspAdapter for SshLspAdapter {
     fn name(&self) -> LanguageServerName {
@@ -12793,39 +12825,6 @@ impl LspAdapter for SshLspAdapter {
 
     fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
         self.code_action_kinds.clone()
-    }
-
-    async fn check_if_user_installed(
-        &self,
-        _: &dyn LspAdapterDelegate,
-        _: Option<Toolchain>,
-        _: &AsyncApp,
-    ) -> Option<LanguageServerBinary> {
-        Some(self.binary.clone())
-    }
-
-    async fn cached_server_binary(
-        &self,
-        _: PathBuf,
-        _: &dyn LspAdapterDelegate,
-    ) -> Option<LanguageServerBinary> {
-        None
-    }
-
-    async fn fetch_latest_server_version(
-        &self,
-        _: &dyn LspAdapterDelegate,
-    ) -> Result<Box<dyn 'static + Send + Any>> {
-        anyhow::bail!("SshLspAdapter does not support fetch_latest_server_version")
-    }
-
-    async fn fetch_server_binary(
-        &self,
-        _: Box<dyn 'static + Send + Any>,
-        _: PathBuf,
-        _: &dyn LspAdapterDelegate,
-    ) -> Result<LanguageServerBinary> {
-        anyhow::bail!("SshLspAdapter does not support fetch_server_binary")
     }
 }
 

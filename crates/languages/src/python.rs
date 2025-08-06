@@ -9,7 +9,7 @@ use language::ToolchainList;
 use language::ToolchainLister;
 use language::language_settings::language_settings;
 use language::{ContextLocation, LanguageToolchainStore};
-use language::{ContextProvider, LspAdapter, LspAdapterDelegate};
+use language::{ContextProvider, LspAdapter, LspAdapterDelegate, LspInstaller};
 use language::{LanguageName, ManifestName, ManifestProvider, ManifestQuery};
 use lsp::LanguageServerBinary;
 use lsp::LanguageServerName;
@@ -26,7 +26,6 @@ use std::cmp::Ordering;
 use parking_lot::Mutex;
 use std::str::FromStr;
 use std::{
-    any::Any,
     borrow::Cow,
     ffi::OsString,
     fmt::Write,
@@ -100,28 +99,13 @@ impl PythonLspAdapter {
     }
 }
 
-#[async_trait(?Send)]
-impl LspAdapter for PythonLspAdapter {
-    fn name(&self) -> LanguageServerName {
-        Self::SERVER_NAME
-    }
+impl LspInstaller for PythonLspAdapter {
+    type BinaryVersion = String;
 
-    async fn initialization_options(
-        self: Arc<Self>,
-        _: &dyn Fs,
-        _: &Arc<dyn LspAdapterDelegate>,
-    ) -> Result<Option<Value>> {
-        // Provide minimal initialization options
-        // Virtual environment configuration will be handled through workspace configuration
-        Ok(Some(json!({
-            "python": {
-                "analysis": {
-                    "autoSearchPaths": true,
-                    "useLibraryCodeForTypes": true,
-                    "autoImportCompletions": true
-                }
-            }
-        })))
+    async fn fetch_latest_server_version(&self, _: &dyn LspAdapterDelegate) -> Result<String> {
+        self.node
+            .npm_package_latest_version(Self::SERVER_NAME.as_ref())
+            .await
     }
 
     async fn check_if_user_installed(
@@ -155,24 +139,12 @@ impl LspAdapter for PythonLspAdapter {
         }
     }
 
-    async fn fetch_latest_server_version(
-        &self,
-        _: &dyn LspAdapterDelegate,
-    ) -> Result<Box<dyn 'static + Any + Send>> {
-        Ok(Box::new(
-            self.node
-                .npm_package_latest_version(Self::SERVER_NAME.as_ref())
-                .await?,
-        ) as Box<_>)
-    }
-
     async fn fetch_server_binary(
         &self,
-        latest_version: Box<dyn 'static + Send + Any>,
+        latest_version: String,
         container_dir: PathBuf,
         delegate: &dyn LspAdapterDelegate,
     ) -> Result<LanguageServerBinary> {
-        let latest_version = latest_version.downcast::<String>().unwrap();
         let server_path = container_dir.join(SERVER_PATH);
 
         self.node
@@ -192,11 +164,10 @@ impl LspAdapter for PythonLspAdapter {
 
     async fn check_if_version_installed(
         &self,
-        version: &(dyn 'static + Send + Any),
+        version: &String,
         container_dir: &PathBuf,
         delegate: &dyn LspAdapterDelegate,
     ) -> Option<LanguageServerBinary> {
-        let version = version.downcast_ref::<String>().unwrap();
         let server_path = container_dir.join(SERVER_PATH);
 
         let should_install_language_server = self
@@ -229,6 +200,31 @@ impl LspAdapter for PythonLspAdapter {
         let mut binary = get_cached_server_binary(container_dir, &self.node).await?;
         binary.env = Some(delegate.shell_env().await);
         Some(binary)
+    }
+}
+
+#[async_trait(?Send)]
+impl LspAdapter for PythonLspAdapter {
+    fn name(&self) -> LanguageServerName {
+        Self::SERVER_NAME
+    }
+
+    async fn initialization_options(
+        self: Arc<Self>,
+        _: &dyn Fs,
+        _: &Arc<dyn LspAdapterDelegate>,
+    ) -> Result<Option<Value>> {
+        // Provide minimal initialization options
+        // Virtual environment configuration will be handled through workspace configuration
+        Ok(Some(json!({
+            "python": {
+                "analysis": {
+                    "autoSearchPaths": true,
+                    "useLibraryCodeForTypes": true,
+                    "autoImportCompletions": true
+                }
+            }
+        })))
     }
 
     async fn process_completions(&self, items: &mut [lsp::CompletionItem]) {
@@ -1023,10 +1019,11 @@ const BINARY_DIR: &str = if cfg!(target_os = "windows") {
     "bin"
 };
 
-#[async_trait(?Send)]
-impl LspAdapter for PyLspAdapter {
-    fn name(&self) -> LanguageServerName {
-        Self::SERVER_NAME
+impl LspInstaller for PyLspAdapter {
+    type BinaryVersion = ();
+
+    async fn fetch_latest_server_version(&self, _: &dyn LspAdapterDelegate) -> Result<()> {
+        Ok(())
     }
 
     async fn check_if_user_installed(
@@ -1053,16 +1050,9 @@ impl LspAdapter for PyLspAdapter {
         }
     }
 
-    async fn fetch_latest_server_version(
-        &self,
-        _: &dyn LspAdapterDelegate,
-    ) -> Result<Box<dyn 'static + Any + Send>> {
-        Ok(Box::new(()) as Box<_>)
-    }
-
     async fn fetch_server_binary(
         &self,
-        _: Box<dyn 'static + Send + Any>,
+        _: (),
         _: PathBuf,
         delegate: &dyn LspAdapterDelegate,
     ) -> Result<LanguageServerBinary> {
@@ -1121,6 +1111,13 @@ impl LspAdapter for PyLspAdapter {
             env: None,
             arguments: vec![],
         })
+    }
+}
+
+#[async_trait(?Send)]
+impl LspAdapter for PyLspAdapter {
+    fn name(&self) -> LanguageServerName {
+        Self::SERVER_NAME
     }
 
     async fn process_completions(&self, _items: &mut [lsp::CompletionItem]) {}
@@ -1315,28 +1312,11 @@ impl BasedPyrightLspAdapter {
     }
 }
 
-#[async_trait(?Send)]
-impl LspAdapter for BasedPyrightLspAdapter {
-    fn name(&self) -> LanguageServerName {
-        Self::SERVER_NAME
-    }
+impl LspInstaller for BasedPyrightLspAdapter {
+    type BinaryVersion = ();
 
-    async fn initialization_options(
-        self: Arc<Self>,
-        _: &dyn Fs,
-        _: &Arc<dyn LspAdapterDelegate>,
-    ) -> Result<Option<Value>> {
-        // Provide minimal initialization options
-        // Virtual environment configuration will be handled through workspace configuration
-        Ok(Some(json!({
-            "python": {
-                "analysis": {
-                    "autoSearchPaths": true,
-                    "useLibraryCodeForTypes": true,
-                    "autoImportCompletions": true
-                }
-            }
-        })))
+    async fn fetch_latest_server_version(&self, _: &dyn LspAdapterDelegate) -> Result<()> {
+        Ok(())
     }
 
     async fn check_if_user_installed(
@@ -1364,16 +1344,9 @@ impl LspAdapter for BasedPyrightLspAdapter {
         }
     }
 
-    async fn fetch_latest_server_version(
-        &self,
-        _: &dyn LspAdapterDelegate,
-    ) -> Result<Box<dyn 'static + Any + Send>> {
-        Ok(Box::new(()) as Box<_>)
-    }
-
     async fn fetch_server_binary(
         &self,
-        _latest_version: Box<dyn 'static + Send + Any>,
+        _latest_version: (),
         _container_dir: PathBuf,
         delegate: &dyn LspAdapterDelegate,
     ) -> Result<LanguageServerBinary> {
@@ -1410,6 +1383,31 @@ impl LspAdapter for BasedPyrightLspAdapter {
             env: None,
             arguments: vec!["--stdio".into()],
         })
+    }
+}
+
+#[async_trait(?Send)]
+impl LspAdapter for BasedPyrightLspAdapter {
+    fn name(&self) -> LanguageServerName {
+        Self::SERVER_NAME
+    }
+
+    async fn initialization_options(
+        self: Arc<Self>,
+        _: &dyn Fs,
+        _: &Arc<dyn LspAdapterDelegate>,
+    ) -> Result<Option<Value>> {
+        // Provide minimal initialization options
+        // Virtual environment configuration will be handled through workspace configuration
+        Ok(Some(json!({
+            "python": {
+                "analysis": {
+                    "autoSearchPaths": true,
+                    "useLibraryCodeForTypes": true,
+                    "autoImportCompletions": true
+                }
+            }
+        })))
     }
 
     async fn process_completions(&self, items: &mut [lsp::CompletionItem]) {
