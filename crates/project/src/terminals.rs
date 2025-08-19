@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use task::{Shell, ShellBuilder, SpawnInTerminal};
+use task::{Shell, ShellBuilder, SpawnInTerminal, system_shell};
 use terminal::{
     TaskState, TaskStatus, Terminal, TerminalBuilder, terminal_settings::TerminalSettings,
 };
@@ -173,6 +173,7 @@ impl Project {
                         path.as_deref(),
                         env,
                         path_style,
+                        None,
                     );
                     env = HashMap::default();
                     if let Some(envs) = envs {
@@ -213,6 +214,7 @@ impl Project {
             cx.entity_id().as_u64(),
             Some(completion_tx),
             cx,
+            None,
         )
         .map(|builder| {
             let terminal_handle = cx.new(|cx| builder.subscribe(cx));
@@ -276,21 +278,33 @@ impl Project {
         let toolchain =
             project_path_context.map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx));
         cx.spawn(async move |project, cx| {
-            let toolchain = maybe!(async {
-                let toolchain = toolchain?.await?;
+            let shell = match &ssh_details {
+                Some(ssh) => ssh.shell.clone(),
+                None => match &settings.shell {
+                    Shell::Program(program) => program.clone(),
+                    Shell::WithArguments {
+                        program,
+                        args: _,
+                        title_override: _,
+                    } => program.clone(),
+                    Shell::System => system_shell(),
+                },
+            };
 
-                Some(())
+            let scripts = maybe!(async {
+                let toolchain = toolchain?.await?;
+                Some(toolchain.startup_script)
             })
             .await;
-
-            let (spawn_task, shell) = {
+            let activation_script = scripts.as_ref().and_then(|it| it.get(&shell));
+            let shell = {
                 match ssh_details {
                     Some(SshDetails {
                         host,
                         ssh_command,
                         envs,
                         path_style,
-                        shell,
+                        shell: _,
                     }) => {
                         log::debug!("Connecting to a remote server: {ssh_command:?}");
 
@@ -308,28 +322,37 @@ impl Project {
                             path.as_deref(),
                             env,
                             path_style,
+                            activation_script.map(String::as_str),
                         );
                         env = HashMap::default();
                         if let Some(envs) = envs {
                             env.extend(envs);
                         }
-                        (
-                            Option::<TaskState>::None,
-                            Shell::WithArguments {
-                                program,
-                                args,
-                                title_override: Some(format!("{} — Terminal", host).into()),
-                            },
-                        )
+                        Shell::WithArguments {
+                            program,
+                            args,
+                            title_override: Some(format!("{} — Terminal", host).into()),
+                        }
                     }
-                    None => (None, settings.shell),
+                    None if activation_script.is_some() => Shell::WithArguments {
+                        program: shell.clone(),
+                        args: vec![
+                            "-c".to_owned(),
+                            format!(
+                                "{}; exec {} -l",
+                                activation_script.unwrap().to_string(),
+                                shell
+                            ),
+                        ],
+                        title_override: None,
+                    },
+                    None => settings.shell,
                 }
             };
-
             project.update(cx, move |this, cx| {
                 TerminalBuilder::new(
                     local_path.map(|path| path.to_path_buf()),
-                    spawn_task,
+                    None,
                     shell,
                     env,
                     settings.cursor_shape.unwrap_or_default(),
@@ -339,6 +362,7 @@ impl Project {
                     cx.entity_id().as_u64(),
                     None,
                     cx,
+                    None,
                 )
                 .map(|builder| {
                     let terminal_handle = cx.new(|cx| builder.subscribe(cx));
@@ -447,6 +471,7 @@ impl Project {
                     path.as_deref(),
                     env,
                     path_style,
+                    None,
                 );
                 let mut command = std::process::Command::new(command);
                 command.args(args);
@@ -479,6 +504,7 @@ pub fn wrap_for_ssh(
     path: Option<&Path>,
     env: HashMap<String, String>,
     path_style: PathStyle,
+    activation_script: Option<&str>,
 ) -> (String, Vec<String>) {
     let to_run = if let Some((command, args)) = command {
         let command: Option<Cow<str>> = shlex::try_quote(command).ok();
@@ -495,6 +521,9 @@ pub fn wrap_for_ssh(
         }
     }
 
+    let activation_script = activation_script
+        .map(|s| format!(" {s};"))
+        .unwrap_or_default();
     let commands = if let Some(path) = path {
         let path = RemotePathBuf::new(path.to_path_buf(), path_style).to_string();
         // shlex will wrap the command in single quotes (''), disabling ~ expansion,
@@ -506,12 +535,12 @@ pub fn wrap_for_ssh(
                 .trim_start_matches("~")
                 .trim_start_matches("/");
 
-            format!("cd \"$HOME/{trimmed_path}\"; {env_changes} {to_run}")
+            format!("cd \"$HOME/{trimmed_path}\";{activation_script} {env_changes} {to_run}")
         } else {
-            format!("cd \"{path}\"; {env_changes} {to_run}")
+            format!("cd \"{path}\";{activation_script} {env_changes} {to_run}")
         }
     } else {
-        format!("cd; {env_changes} {to_run}")
+        format!("cd;{activation_script} {env_changes} {to_run}")
     };
     let shell_invocation = format!("{shell} -c {}", shlex::try_quote(&commands).unwrap());
 

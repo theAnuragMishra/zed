@@ -293,6 +293,7 @@ impl DapStore {
                         binary.cwd.as_deref(),
                         binary.envs,
                         path_style,
+                        None,
                     );
 
                     Ok(DebugAdapterBinary {
