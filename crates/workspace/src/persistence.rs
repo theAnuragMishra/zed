@@ -1385,6 +1385,7 @@ impl WorkspaceDb {
         relative_path: String,
         language_name: LanguageName,
     ) -> Result<Option<Toolchain>> {
+        return Ok(None);
         self.write(move |this| {
             let mut select = this
                 .select_bound(sql!(
@@ -1400,8 +1401,7 @@ impl WorkspaceDb {
                 path: path.into(),
                 language_name,
                 as_json: serde_json::Value::from_str(&raw_json).ok()?,
-                // todo refresh?
-                startup_script: Default::default(),
+                activation_script: Default::default(),
             })))
         })
         .await
@@ -1411,6 +1411,7 @@ impl WorkspaceDb {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Vec<(Toolchain, WorktreeId, Arc<Path>)>> {
+        return Ok(vec![]);
         self.write(move |this| {
             let mut select = this
                 .select_bound(sql!(
@@ -1426,8 +1427,7 @@ impl WorkspaceDb {
                 path: path.into(),
                 language_name: LanguageName::new(&language_name),
                 as_json: serde_json::Value::from_str(&raw_json).ok()?,
-                // todo refresh?
-                startup_script: Default::default(),
+                activation_script: Default::default(),
             }, WorktreeId::from_proto(worktree_id), Arc::from(relative_worktree_path.as_ref())))).collect())
         })
         .await

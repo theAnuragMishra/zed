@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use task::{Shell, ShellBuilder, SpawnInTerminal, system_shell};
+use task::{Shell, ShellBuilder, ShellKind, SpawnInTerminal, system_shell};
 use terminal::{
     TaskState, TaskStatus, Terminal, TerminalBuilder, terminal_settings::TerminalSettings,
 };
@@ -293,10 +293,12 @@ impl Project {
 
             let scripts = maybe!(async {
                 let toolchain = toolchain?.await?;
-                Some(toolchain.startup_script)
+                Some(toolchain.activation_script)
             })
             .await;
-            let activation_script = scripts.as_ref().and_then(|it| it.get(&shell));
+            let activation_script = scripts
+                .as_ref()
+                .and_then(|it| it.get(&ShellKind::new(&shell)));
             let shell = {
                 match ssh_details {
                     Some(SshDetails {
