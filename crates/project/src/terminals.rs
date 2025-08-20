@@ -273,43 +273,6 @@ impl Project {
         env.extend(settings.env);
 
         let local_path = if is_ssh_terminal { None } else { path.clone() };
-
-        let (spawn_task, shell) = {
-            match ssh_details {
-                Some(SshDetails {
-                    host,
-                    ssh_command,
-                    envs,
-                    path_style,
-                    shell,
-                }) => {
-                    log::debug!("Connecting to a remote server: {ssh_command:?}");
-
-                    // Alacritty sets its terminfo to `alacritty`, this requiring hosts to have it installed
-                    // to properly display colors.
-                    // We do not have the luxury of assuming the host has it installed,
-                    // so we set it to a default that does not break the highlighting via ssh.
-                    env.entry("TERM".to_string())
-                        .or_insert_with(|| "xterm-256color".to_string());
-
-                    let (program, args) =
-                        wrap_for_ssh(&shell, &ssh_command, None, path.as_deref(), env, path_style);
-                    env = HashMap::default();
-                    if let Some(envs) = envs {
-                        env.extend(envs);
-                    }
-                    (
-                        Option::<TaskState>::None,
-                        Shell::WithArguments {
-                            program,
-                            args,
-                            title_override: Some(format!("{} — Terminal", host).into()),
-                        },
-                    )
-                }
-                None => (None, settings.shell),
-            }
-        };
         let toolchain =
             project_path_context.map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx));
         cx.spawn(async move |project, cx| {
@@ -319,6 +282,50 @@ impl Project {
                 Some(())
             })
             .await;
+
+            let (spawn_task, shell) = {
+                match ssh_details {
+                    Some(SshDetails {
+                        host,
+                        ssh_command,
+                        envs,
+                        path_style,
+                        shell,
+                    }) => {
+                        log::debug!("Connecting to a remote server: {ssh_command:?}");
+
+                        // Alacritty sets its terminfo to `alacritty`, this requiring hosts to have it installed
+                        // to properly display colors.
+                        // We do not have the luxury of assuming the host has it installed,
+                        // so we set it to a default that does not break the highlighting via ssh.
+                        env.entry("TERM".to_string())
+                            .or_insert_with(|| "xterm-256color".to_string());
+
+                        let (program, args) = wrap_for_ssh(
+                            &shell,
+                            &ssh_command,
+                            None,
+                            path.as_deref(),
+                            env,
+                            path_style,
+                        );
+                        env = HashMap::default();
+                        if let Some(envs) = envs {
+                            env.extend(envs);
+                        }
+                        (
+                            Option::<TaskState>::None,
+                            Shell::WithArguments {
+                                program,
+                                args,
+                                title_override: Some(format!("{} — Terminal", host).into()),
+                            },
+                        )
+                    }
+                    None => (None, settings.shell),
+                }
+            };
+
             project.update(cx, move |this, cx| {
                 TerminalBuilder::new(
                     local_path.map(|path| path.to_path_buf()),
