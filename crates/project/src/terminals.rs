@@ -11,12 +11,12 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use task::{Shell, ShellBuilder, ShellKind, SpawnInTerminal, system_shell};
+use task::{Shell, ShellBuilder, ShellKind, SpawnInTerminal};
 use terminal::{
     TaskState, TaskStatus, Terminal, TerminalBuilder, terminal_settings::TerminalSettings,
 };
 use util::{
-    maybe,
+    get_system_shell, maybe,
     paths::{PathStyle, RemotePathBuf},
 };
 
@@ -287,18 +287,17 @@ impl Project {
                         args: _,
                         title_override: _,
                     } => program.clone(),
-                    Shell::System => system_shell(),
+                    Shell::System => get_system_shell(),
                 },
             };
+            let shell_kind = ShellKind::new(&shell);
 
             let scripts = maybe!(async {
                 let toolchain = toolchain?.await?;
                 Some(toolchain.activation_script)
             })
             .await;
-            let activation_script = scripts
-                .as_ref()
-                .and_then(|it| it.get(&ShellKind::new(&shell)));
+            let activation_script = scripts.as_ref().and_then(|it| it.get(&shell_kind));
             let shell = {
                 match ssh_details {
                     Some(SshDetails {
@@ -336,19 +335,17 @@ impl Project {
                             title_override: Some(format!("{} — Terminal", host).into()),
                         }
                     }
-                    None if activation_script.is_some() => Shell::WithArguments {
-                        program: shell.clone(),
-                        args: vec![
-                            "-c".to_owned(),
-                            format!(
-                                "{}; exec {} -l",
-                                activation_script.unwrap().to_string(),
-                                shell
-                            ),
-                        ],
-                        title_override: None,
+                    None => match activation_script {
+                        Some(activation_script) => Shell::WithArguments {
+                            program: shell.clone(),
+                            args: vec![
+                                "-c".to_owned(),
+                                format!("{activation_script}; exec {shell} -l",),
+                            ],
+                            title_override: None,
+                        },
+                        None => settings.shell,
                     },
-                    None => settings.shell,
                 }
             };
             project.update(cx, move |this, cx| {
@@ -508,6 +505,7 @@ pub fn wrap_for_ssh(
     path_style: PathStyle,
     activation_script: Option<&str>,
 ) -> (String, Vec<String>) {
+    // todo make this shell aware
     let to_run = if let Some((command, args)) = command {
         let command: Option<Cow<str>> = shlex::try_quote(command).ok();
         let args = args.iter().filter_map(|arg| shlex::try_quote(arg).ok());
