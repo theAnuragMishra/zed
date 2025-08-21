@@ -10,6 +10,10 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: FIXME
+      shell: powershell
+      run: Write-Host "$env:LOCALAPPDATA"
+
     - name: Install test runner
       shell: powershell
       working-directory: ${{ inputs.working-directory }}
