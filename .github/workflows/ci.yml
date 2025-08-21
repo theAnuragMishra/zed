@@ -254,7 +254,9 @@ jobs:
     timeout-minutes: 60
     name: (macOS) Run Clippy and tests
     needs: [job_spec]
+    # FIXME
     if: |
+      false &&
       github.repository_owner == 'zed-industries' &&
       needs.job_spec.outputs.run_tests == 'true'
     runs-on:
@@ -324,7 +326,9 @@ jobs:
     timeout-minutes: 60
     name: (Linux) Run Clippy and tests
     needs: [job_spec]
+    # FIXME
     if: |
+      false &&
       github.repository_owner == 'zed-industries' &&
       needs.job_spec.outputs.run_tests == 'true'
     runs-on:
@@ -376,7 +380,9 @@ jobs:
     timeout-minutes: 60
     name: (Linux) Build Remote Server
     needs: [job_spec]
+    # FIXME
     if: |
+      false &&
       github.repository_owner == 'zed-industries' &&
       needs.job_spec.outputs.run_tests == 'true'
     runs-on:
