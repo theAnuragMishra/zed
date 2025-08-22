@@ -94,7 +94,8 @@ impl Project {
         &mut self,
         spawn_task: SpawnInTerminal,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<Terminal>> {
+        project_path_context: Option<ProjectPath>,
+    ) -> Task<Result<Entity<Terminal>>> {
         let this = &mut *self;
         let ssh_details = this.ssh_details(cx);
         let path: Option<Arc<Path>> = if let Some(cwd) = &spawn_task.cwd {
@@ -135,8 +136,14 @@ impl Project {
         env.extend(settings.env);
 
         let local_path = if is_ssh_terminal { None } else { path.clone() };
-
-        let (spawn_task, shell) = {
+        let toolchain =
+            project_path_context.map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx));
+        cx.spawn(async move |project, cx| {
+            let scripts = maybe!(async {
+                let toolchain = toolchain?.await?;
+                Some(toolchain.activation_script)
+            })
+            .await;
             let task_state = Some(TaskState {
                 id: spawn_task.id,
                 full_label: spawn_task.full_label,
@@ -150,94 +157,132 @@ impl Project {
                 completion_rx,
             });
 
-            env.extend(spawn_task.env);
+            let shell = {
+                env.extend(spawn_task.env);
+                // todo(lw): Use shell builder
+                let shell = match &ssh_details {
+                    Some(ssh) => ssh.shell.clone(),
+                    None => match &settings.shell {
+                        Shell::Program(program) => program.clone(),
+                        Shell::WithArguments {
+                            program,
+                            args: _,
+                            title_override: _,
+                        } => program.clone(),
+                        Shell::System => get_system_shell(),
+                    },
+                };
+                let shell_kind = ShellKind::new(&shell);
+                let activation_script = scripts.as_ref().and_then(|it| it.get(&shell_kind));
 
-            match ssh_details {
-                Some(SshDetails {
-                    host,
-                    ssh_command,
-                    envs,
-                    path_style,
-                    shell,
-                }) => {
-                    log::debug!("Connecting to a remote server: {ssh_command:?}");
-                    env.entry("TERM".to_string())
-                        .or_insert_with(|| "xterm-256color".to_string());
-                    let (program, args) = wrap_for_ssh(
-                        &shell,
-                        &ssh_command,
-                        spawn_task
-                            .command
-                            .as_ref()
-                            .map(|command| (command, &spawn_task.args)),
-                        path.as_deref(),
-                        env,
+                match ssh_details {
+                    Some(SshDetails {
+                        host,
+                        ssh_command,
+                        envs,
                         path_style,
-                        None,
-                    );
-                    env = HashMap::default();
-                    if let Some(envs) = envs {
-                        env.extend(envs);
-                    }
-                    (
-                        task_state,
+                        shell,
+                    }) => {
+                        log::debug!("Connecting to a remote server: {ssh_command:?}");
+                        env.entry("TERM".to_string())
+                            .or_insert_with(|| "xterm-256color".to_string());
+
+                        let (program, args) = wrap_for_ssh(
+                            &shell,
+                            &ssh_command,
+                            spawn_task
+                                .command
+                                .as_ref()
+                                .map(|command| (command, &spawn_task.args)),
+                            path.as_deref(),
+                            env,
+                            path_style,
+                            activation_script.map(String::as_str),
+                        );
+                        env = HashMap::default();
+                        if let Some(envs) = envs {
+                            env.extend(envs);
+                        }
                         Shell::WithArguments {
                             program,
                             args,
                             title_override: Some(format!("{} — Terminal", host).into()),
-                        },
-                    )
-                }
-                None => {
-                    let shell = if let Some(program) = spawn_task.command {
-                        Shell::WithArguments {
-                            program,
-                            args: spawn_task.args,
-                            title_override: None,
                         }
-                    } else {
-                        Shell::System
-                    };
-                    (task_state, shell)
+                    }
+                    None => match activation_script {
+                        Some(activation_script) => {
+                            let to_run = if let Some(command) = spawn_task.command {
+                                let command: Option<Cow<str>> = shlex::try_quote(&command).ok();
+                                let args = spawn_task
+                                    .args
+                                    .iter()
+                                    .filter_map(|arg| shlex::try_quote(arg).ok());
+                                command.into_iter().chain(args).join(" ")
+                            } else {
+                                format!("exec {shell} -l")
+                            };
+                            Shell::WithArguments {
+                                program: shell,
+                                args: vec![
+                                    "-c".to_owned(),
+                                    format!("{activation_script}; {to_run}",),
+                                ],
+                                title_override: None,
+                            }
+                        }
+                        None => {
+                            if let Some(program) = spawn_task.command {
+                                Shell::WithArguments {
+                                    program,
+                                    args: spawn_task.args,
+                                    title_override: None,
+                                }
+                            } else {
+                                Shell::System
+                            }
+                        }
+                    },
                 }
-            }
-        };
-        TerminalBuilder::new(
-            local_path.map(|path| path.to_path_buf()),
-            spawn_task,
-            shell,
-            env,
-            settings.cursor_shape.unwrap_or_default(),
-            settings.alternate_scroll,
-            settings.max_scroll_history_lines,
-            is_ssh_terminal,
-            cx.entity_id().as_u64(),
-            Some(completion_tx),
-            cx,
-            None,
-        )
-        .map(|builder| {
-            let terminal_handle = cx.new(|cx| builder.subscribe(cx));
+            };
+            project.update(cx, move |this, cx| {
+                TerminalBuilder::new(
+                    local_path.map(|path| path.to_path_buf()),
+                    task_state,
+                    shell,
+                    env,
+                    settings.cursor_shape.unwrap_or_default(),
+                    settings.alternate_scroll,
+                    settings.max_scroll_history_lines,
+                    is_ssh_terminal,
+                    cx.entity_id().as_u64(),
+                    Some(completion_tx),
+                    cx,
+                    None,
+                )
+                .map(|builder| {
+                    let terminal_handle = cx.new(|cx| builder.subscribe(cx));
 
-            this.terminals
-                .local_handles
-                .push(terminal_handle.downgrade());
+                    this.terminals
+                        .local_handles
+                        .push(terminal_handle.downgrade());
 
-            let id = terminal_handle.entity_id();
-            cx.observe_release(&terminal_handle, move |project, _terminal, cx| {
-                let handles = &mut project.terminals.local_handles;
+                    let id = terminal_handle.entity_id();
+                    cx.observe_release(&terminal_handle, move |project, _terminal, cx| {
+                        let handles = &mut project.terminals.local_handles;
 
-                if let Some(index) = handles
-                    .iter()
-                    .position(|terminal| terminal.entity_id() == id)
-                {
-                    handles.remove(index);
-                    cx.notify();
-                }
-            })
-            .detach();
+                        if let Some(index) = handles
+                            .iter()
+                            .position(|terminal| terminal.entity_id() == id)
+                        {
+                            handles.remove(index);
+                            cx.notify();
+                        }
+                    })
+                    .detach();
 
-            terminal_handle
+                    terminal_handle
+                })
+            })?
         })
     }
 
@@ -278,6 +323,7 @@ impl Project {
         let toolchain =
             project_path_context.map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx));
         cx.spawn(async move |project, cx| {
+            // todo(lw): Use shell builder
             let shell = match &ssh_details {
                 Some(ssh) => ssh.shell.clone(),
                 None => match &settings.shell {
