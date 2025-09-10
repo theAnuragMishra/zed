@@ -45,14 +45,15 @@ use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 use settings::{Settings, update_settings_file};
 use smol::stream::StreamExt;
-use std::fmt::Write;
 use std::{
     collections::BTreeMap,
     ops::RangeInclusive,
     path::Path,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
+use std::{fmt::Write, path::PathBuf};
 use util::{ResultExt, debug_panic, markdown::MarkdownCodeBlock};
 use uuid::Uuid;
 
@@ -484,11 +485,15 @@ impl AgentMessage {
         };
 
         for tool_result in self.tool_results.values() {
+            let mut tool_result = tool_result.clone();
+            // Surprisingly, the API fails if we return an empty string here.
+            // It thinks we are sending a tool use without a tool result.
+            if tool_result.content.is_empty() {
+                tool_result.content = "<Tool returned an empty string>".into();
+            }
             user_message
                 .content
-                .push(language_model::MessageContent::ToolResult(
-                    tool_result.clone(),
-                ));
+                .push(language_model::MessageContent::ToolResult(tool_result));
         }
 
         let mut messages = Vec::new();
@@ -519,6 +524,22 @@ pub enum AgentMessageContent {
     ToolUse(LanguageModelToolUse),
 }
 
+pub trait TerminalHandle {
+    fn id(&self, cx: &AsyncApp) -> Result<acp::TerminalId>;
+    fn current_output(&self, cx: &AsyncApp) -> Result<acp::TerminalOutputResponse>;
+    fn wait_for_exit(&self, cx: &AsyncApp) -> Result<Shared<Task<acp::TerminalExitStatus>>>;
+}
+
+pub trait ThreadEnvironment {
+    fn create_terminal(
+        &self,
+        command: String,
+        cwd: Option<PathBuf>,
+        output_byte_limit: Option<u64>,
+        cx: &mut AsyncApp,
+    ) -> Task<Result<Rc<dyn TerminalHandle>>>;
+}
+
 #[derive(Debug)]
 pub enum ThreadEvent {
     UserMessage(UserMessage),
@@ -529,6 +550,14 @@ pub enum ThreadEvent {
     ToolCallAuthorization(ToolCallAuthorization),
     Retry(acp_thread::RetryStatus),
     Stop(acp::StopReason),
+}
+
+#[derive(Debug)]
+pub struct NewTerminal {
+    pub command: String,
+    pub output_byte_limit: Option<u64>,
+    pub cwd: Option<PathBuf>,
+    pub response: oneshot::Sender<Result<Entity<acp_thread::Terminal>>>,
 }
 
 #[derive(Debug)]
@@ -575,11 +604,22 @@ pub struct Thread {
     templates: Arc<Templates>,
     model: Option<Arc<dyn LanguageModel>>,
     summarization_model: Option<Arc<dyn LanguageModel>>,
+    prompt_capabilities_tx: watch::Sender<acp::PromptCapabilities>,
+    pub(crate) prompt_capabilities_rx: watch::Receiver<acp::PromptCapabilities>,
     pub(crate) project: Entity<Project>,
     pub(crate) action_log: Entity<ActionLog>,
 }
 
 impl Thread {
+    fn prompt_capabilities(model: Option<&dyn LanguageModel>) -> acp::PromptCapabilities {
+        let image = model.map_or(true, |model| model.supports_images());
+        acp::PromptCapabilities {
+            image,
+            audio: false,
+            embedded_context: true,
+        }
+    }
+
     pub fn new(
         project: Entity<Project>,
         project_context: Entity<ProjectContext>,
@@ -590,6 +630,8 @@ impl Thread {
     ) -> Self {
         let profile_id = AgentSettings::get_global(cx).default_profile.clone();
         let action_log = cx.new(|_cx| ActionLog::new(project.clone()));
+        let (prompt_capabilities_tx, prompt_capabilities_rx) =
+            watch::channel(Self::prompt_capabilities(model.as_deref()));
         Self {
             id: acp::SessionId(uuid::Uuid::new_v4().to_string().into()),
             prompt_id: PromptId::new(),
@@ -617,6 +659,8 @@ impl Thread {
             templates,
             model,
             summarization_model: None,
+            prompt_capabilities_tx,
+            prompt_capabilities_rx,
             project,
             action_log,
         }
@@ -697,7 +741,7 @@ impl Thread {
             return;
         };
 
-        let title = tool.initial_title(tool_use.input.clone());
+        let title = tool.initial_title(tool_use.input.clone(), cx);
         let kind = tool.kind();
         stream.send_tool_call(&tool_use.id, title, kind, tool_use.input.clone());
 
@@ -717,7 +761,17 @@ impl Thread {
         stream.update_tool_call_fields(
             &tool_use.id,
             acp::ToolCallUpdateFields {
-                status: Some(acp::ToolCallStatus::Completed),
+                status: Some(
+                    tool_result
+                        .as_ref()
+                        .map_or(acp::ToolCallStatus::Failed, |result| {
+                            if result.is_error {
+                                acp::ToolCallStatus::Failed
+                            } else {
+                                acp::ToolCallStatus::Completed
+                            }
+                        }),
+                ),
                 raw_output: output,
                 ..Default::default()
             },
@@ -750,6 +804,8 @@ impl Thread {
                 .or_else(|| registry.default_model())
                 .map(|model| model.model)
         });
+        let (prompt_capabilities_tx, prompt_capabilities_rx) =
+            watch::channel(Self::prompt_capabilities(model.as_deref()));
 
         Self {
             id,
@@ -779,6 +835,8 @@ impl Thread {
             project,
             action_log,
             updated_at: db_thread.updated_at,
+            prompt_capabilities_tx,
+            prompt_capabilities_rx,
         }
     }
 
@@ -946,10 +1004,12 @@ impl Thread {
     pub fn set_model(&mut self, model: Arc<dyn LanguageModel>, cx: &mut Context<Self>) {
         let old_usage = self.latest_token_usage();
         self.model = Some(model);
+        let new_caps = Self::prompt_capabilities(self.model.as_deref());
         let new_usage = self.latest_token_usage();
         if old_usage != new_usage {
             cx.emit(TokenUsageUpdated(new_usage));
         }
+        self.prompt_capabilities_tx.send(new_caps).log_err();
         cx.notify()
     }
 
@@ -989,7 +1049,11 @@ impl Thread {
         }
     }
 
-    pub fn add_default_tools(&mut self, cx: &mut Context<Self>) {
+    pub fn add_default_tools(
+        &mut self,
+        environment: Rc<dyn ThreadEnvironment>,
+        cx: &mut Context<Self>,
+    ) {
         let language_registry = self.project.read(cx).languages().clone();
         self.add_tool(CopyPathTool::new(self.project.clone()));
         self.add_tool(CreateDirectoryTool::new(self.project.clone()));
@@ -998,7 +1062,11 @@ impl Thread {
             self.action_log.clone(),
         ));
         self.add_tool(DiagnosticsTool::new(self.project.clone()));
-        self.add_tool(EditFileTool::new(cx.weak_entity(), language_registry));
+        self.add_tool(EditFileTool::new(
+            self.project.clone(),
+            cx.weak_entity(),
+            language_registry,
+        ));
         self.add_tool(FetchTool::new(self.project.read(cx).client().http_client()));
         self.add_tool(FindPathTool::new(self.project.clone()));
         self.add_tool(GrepTool::new(self.project.clone()));
@@ -1010,7 +1078,7 @@ impl Thread {
             self.project.clone(),
             self.action_log.clone(),
         ));
-        self.add_tool(TerminalTool::new(self.project.clone(), cx));
+        self.add_tool(TerminalTool::new(self.project.clone(), environment));
         self.add_tool(ThinkingTool);
         self.add_tool(WebSearchTool);
     }
@@ -1450,7 +1518,7 @@ impl Thread {
         let mut title = SharedString::from(&tool_use.name);
         let mut kind = acp::ToolKind::Other;
         if let Some(tool) = tool.as_ref() {
-            title = tool.initial_title(tool_use.input.clone());
+            title = tool.initial_title(tool_use.input.clone(), cx);
             kind = tool.kind();
         }
 
@@ -1536,7 +1604,7 @@ impl Thread {
                     tool_name: tool_use.name,
                     is_error: true,
                     content: LanguageModelToolResultContent::Text(Arc::from(error.to_string())),
-                    output: None,
+                    output: Some(error.to_string().into()),
                 },
             }
         }))
@@ -2084,7 +2152,11 @@ where
     fn kind() -> acp::ToolKind;
 
     /// The initial tool title to display. Can be updated during the tool run.
-    fn initial_title(&self, input: Result<Self::Input, serde_json::Value>) -> SharedString;
+    fn initial_title(
+        &self,
+        input: Result<Self::Input, serde_json::Value>,
+        cx: &mut App,
+    ) -> SharedString;
 
     /// Returns the JSON schema that describes the tool's input.
     fn input_schema(&self, format: LanguageModelToolSchemaFormat) -> Schema {
@@ -2132,7 +2204,7 @@ pub trait AnyAgentTool {
     fn name(&self) -> SharedString;
     fn description(&self) -> SharedString;
     fn kind(&self) -> acp::ToolKind;
-    fn initial_title(&self, input: serde_json::Value) -> SharedString;
+    fn initial_title(&self, input: serde_json::Value, _cx: &mut App) -> SharedString;
     fn input_schema(&self, format: LanguageModelToolSchemaFormat) -> Result<serde_json::Value>;
     fn supported_provider(&self, _provider: &LanguageModelProviderId) -> bool {
         true
@@ -2168,9 +2240,9 @@ where
         T::kind()
     }
 
-    fn initial_title(&self, input: serde_json::Value) -> SharedString {
+    fn initial_title(&self, input: serde_json::Value, _cx: &mut App) -> SharedString {
         let parsed_input = serde_json::from_value(input.clone()).map_err(|_| input);
-        self.0.initial_title(parsed_input)
+        self.0.initial_title(parsed_input, _cx)
     }
 
     fn input_schema(&self, format: LanguageModelToolSchemaFormat) -> Result<serde_json::Value> {
@@ -2354,19 +2426,6 @@ impl ToolCallEventStream {
             .ok();
     }
 
-    pub fn update_terminal(&self, terminal: Entity<acp_thread::Terminal>) {
-        self.stream
-            .0
-            .unbounded_send(Ok(ThreadEvent::ToolCallUpdate(
-                acp_thread::ToolCallUpdateTerminal {
-                    id: acp::ToolCallId(self.tool_use_id.to_string().into()),
-                    terminal,
-                }
-                .into(),
-            )))
-            .ok();
-    }
-
     pub fn authorize(&self, title: impl Into<String>, cx: &mut App) -> Task<Result<()>> {
         if agent_settings::AgentSettings::get_global(cx).always_allow_tool_actions {
             return Task::ready(Ok(()));
@@ -2435,6 +2494,30 @@ impl ToolCallEventStreamReceiver {
             auth
         } else {
             panic!("Expected ToolCallAuthorization but got: {:?}", event);
+        }
+    }
+
+    pub async fn expect_update_fields(&mut self) -> acp::ToolCallUpdateFields {
+        let event = self.0.next().await;
+        if let Some(Ok(ThreadEvent::ToolCallUpdate(acp_thread::ToolCallUpdate::UpdateFields(
+            update,
+        )))) = event
+        {
+            update.fields
+        } else {
+            panic!("Expected update fields but got: {:?}", event);
+        }
+    }
+
+    pub async fn expect_diff(&mut self) -> Entity<acp_thread::Diff> {
+        let event = self.0.next().await;
+        if let Some(Ok(ThreadEvent::ToolCallUpdate(acp_thread::ToolCallUpdate::UpdateDiff(
+            update,
+        )))) = event
+        {
+            update.diff
+        } else {
+            panic!("Expected diff but got: {:?}", event);
         }
     }
 

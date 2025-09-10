@@ -1,9 +1,10 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use gpui::{EventEmitter, FocusHandle, Focusable};
 use ui::{
     App, Button, ButtonCommon, ButtonStyle, Clickable, Context, FluentBuilder, InteractiveElement,
-    KeyBinding, ParentElement, Render, SharedString, Styled as _, Window, h_flex, v_flex,
+    KeyBinding, Label, LabelCommon, LabelSize, ParentElement, Render, SharedString, Styled as _,
+    Window, h_flex, v_flex,
 };
 use zed_actions::workspace::OpenWithSystem;
 
@@ -12,7 +13,7 @@ use crate::Item;
 /// A view to display when a certain buffer fails to open.
 pub struct InvalidBufferView {
     /// Which path was attempted to open.
-    pub abs_path: Arc<PathBuf>,
+    pub abs_path: Arc<Path>,
     /// An error message, happened when opening the buffer.
     pub error: SharedString,
     is_local: bool,
@@ -21,7 +22,7 @@ pub struct InvalidBufferView {
 
 impl InvalidBufferView {
     pub fn new(
-        abs_path: PathBuf,
+        abs_path: &Path,
         is_local: bool,
         e: &anyhow::Error,
         _: &mut Window,
@@ -29,8 +30,8 @@ impl InvalidBufferView {
     ) -> Self {
         Self {
             is_local,
-            abs_path: Arc::new(abs_path),
-            error: format!("{e}").into(),
+            abs_path: Arc::from(abs_path),
+            error: format!("{}", e.root_cause()).into(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -43,7 +44,7 @@ impl Item for InvalidBufferView {
         // Ensure we always render at least the filename.
         detail += 1;
 
-        let path = self.abs_path.as_path();
+        let path = self.abs_path.as_ref();
 
         let mut prefix = path;
         while detail > 0 {
@@ -88,7 +89,12 @@ impl Render for InvalidBufferView {
                     v_flex()
                         .justify_center()
                         .gap_2()
-                        .child(h_flex().justify_center().child("Unsupported file type"))
+                        .child(h_flex().justify_center().child("Could not open file"))
+                        .child(
+                            h_flex()
+                                .justify_center()
+                                .child(Label::new(self.error.clone()).size(LabelSize::Small)),
+                        )
                         .when(self.is_local, |contents| {
                             contents.child(
                                 h_flex().justify_center().child(

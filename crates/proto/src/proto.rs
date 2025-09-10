@@ -16,8 +16,8 @@ pub use typed_envelope::*;
 
 include!(concat!(env!("OUT_DIR"), "/zed.messages.rs"));
 
-pub const SSH_PEER_ID: PeerId = PeerId { owner_id: 0, id: 0 };
-pub const SSH_PROJECT_ID: u64 = 0;
+pub const REMOTE_SERVER_PEER_ID: PeerId = PeerId { owner_id: 0, id: 0 };
+pub const REMOTE_SERVER_PROJECT_ID: u64 = 0;
 
 messages!(
     (Ack, Foreground),
@@ -26,6 +26,8 @@ messages!(
     (ActivateToolchain, Foreground),
     (ActiveToolchain, Foreground),
     (ActiveToolchainResponse, Foreground),
+    (ResolveToolchain, Background),
+    (ResolveToolchainResponse, Background),
     (AddNotification, Foreground),
     (AddProjectCollaborator, Foreground),
     (AddWorktree, Foreground),
@@ -102,6 +104,8 @@ messages!(
     (GetPathMetadata, Background),
     (GetPathMetadataResponse, Background),
     (GetPermalinkToLine, Foreground),
+    (GetProcesses, Background),
+    (GetProcessesResponse, Background),
     (GetPermalinkToLineResponse, Foreground),
     (GetProjectSymbols, Background),
     (GetProjectSymbolsResponse, Background),
@@ -278,6 +282,7 @@ messages!(
     (UpdateUserChannels, Foreground),
     (UpdateWorktree, Foreground),
     (UpdateWorktreeSettings, Foreground),
+    (UpdateUserSettings, Background),
     (UpdateRepository, Foreground),
     (RemoveRepository, Foreground),
     (UsersResponse, Foreground),
@@ -312,7 +317,13 @@ messages!(
     (GetDefaultBranch, Background),
     (GetDefaultBranchResponse, Background),
     (GitClone, Background),
-    (GitCloneResponse, Background)
+    (GitCloneResponse, Background),
+    (ToggleLspLogs, Background),
+    (GetAgentServerCommand, Background),
+    (AgentServerCommand, Background),
+    (ExternalAgentsUpdated, Background),
+    (ExternalAgentLoadingStatusUpdated, Background),
+    (NewExternalAgentVersionAvailable, Background),
 );
 
 request_messages!(
@@ -455,6 +466,7 @@ request_messages!(
     (ListToolchains, ListToolchainsResponse),
     (ActivateToolchain, Ack),
     (ActiveToolchain, ActiveToolchainResponse),
+    (ResolveToolchain, ResolveToolchainResponse),
     (GetPathMetadata, GetPathMetadataResponse),
     (GetCrashFiles, GetCrashFilesResponse),
     (CancelLanguageServerWork, Ack),
@@ -481,7 +493,10 @@ request_messages!(
     (GetDocumentDiagnostics, GetDocumentDiagnosticsResponse),
     (PullWorkspaceDiagnostics, Ack),
     (GetDefaultBranch, GetDefaultBranchResponse),
-    (GitClone, GitCloneResponse)
+    (GitClone, GitCloneResponse),
+    (ToggleLspLogs, Ack),
+    (GetProcesses, GetProcessesResponse),
+    (GetAgentServerCommand, AgentServerCommand)
 );
 
 lsp_messages!(
@@ -581,6 +596,7 @@ entity_messages!(
     UpdateRepository,
     RemoveRepository,
     UpdateWorktreeSettings,
+    UpdateUserSettings,
     LspExtExpandMacro,
     LspExtOpenDocs,
     LspExtRunnables,
@@ -605,13 +621,16 @@ entity_messages!(
     ListToolchains,
     ActivateToolchain,
     ActiveToolchain,
+    ResolveToolchain,
     GetPathMetadata,
+    GetProcesses,
     CancelLanguageServerWork,
     RegisterBufferWithLanguageServers,
     GitShow,
     GitReset,
     GitCheckoutFiles,
     SetIndexText,
+    ToggleLspLogs,
 
     Push,
     Fetch,
@@ -631,7 +650,11 @@ entity_messages!(
     GetDocumentDiagnostics,
     PullWorkspaceDiagnostics,
     GetDefaultBranch,
-    GitClone
+    GitClone,
+    GetAgentServerCommand,
+    ExternalAgentsUpdated,
+    ExternalAgentLoadingStatusUpdated,
+    NewExternalAgentVersionAvailable,
 );
 
 entity_messages!(

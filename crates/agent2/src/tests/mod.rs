@@ -471,7 +471,7 @@ async fn test_tool_authorization(cx: &mut TestAppContext) {
                 tool_name: ToolRequiringPermission::name().into(),
                 is_error: true,
                 content: "Permission to run tool denied by user".into(),
-                output: None
+                output: Some("Permission to run tool denied by user".into())
             })
         ]
     );
@@ -949,6 +949,7 @@ async fn test_mcp_tools(cx: &mut TestAppContext) {
         paths::settings_file(),
         json!({
             "agent": {
+                "always_allow_tool_actions": true,
                 "profiles": {
                     "test": {
                         "name": "Test Profile",
@@ -1819,11 +1820,11 @@ async fn test_agent_connection(cx: &mut TestAppContext) {
         let clock = Arc::new(clock::FakeSystemClock::new());
         let client = Client::new(clock, http_client, cx);
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
-        Project::init_settings(cx);
-        agent_settings::init(cx);
         language_model::init(client.clone(), cx);
         language_models::init(user_store, client.clone(), cx);
+        Project::init_settings(cx);
         LanguageModelRegistry::test(cx);
+        agent_settings::init(cx);
     });
     cx.executor().forbid_parking();
 
@@ -2349,15 +2350,20 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
         settings::init(cx);
         Project::init_settings(cx);
         agent_settings::init(cx);
-        gpui_tokio::init(cx);
-        let http_client = ReqwestClient::user_agent("agent tests").unwrap();
-        cx.set_http_client(Arc::new(http_client));
 
-        client::init_settings(cx);
-        let client = Client::production(cx);
-        let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
-        language_model::init(client.clone(), cx);
-        language_models::init(user_store, client.clone(), cx);
+        match model {
+            TestModel::Fake => {}
+            TestModel::Sonnet4 => {
+                gpui_tokio::init(cx);
+                let http_client = ReqwestClient::user_agent("agent tests").unwrap();
+                cx.set_http_client(Arc::new(http_client));
+                client::init_settings(cx);
+                let client = Client::production(cx);
+                let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
+                language_model::init(client.clone(), cx);
+                language_models::init(user_store, client.clone(), cx);
+            }
+        };
 
         watch_settings(fs.clone(), cx);
     });
@@ -2471,6 +2477,7 @@ fn setup_context_server(
                     path: "somebinary".into(),
                     args: Vec::new(),
                     env: None,
+                    timeout: None,
                 },
             },
         );

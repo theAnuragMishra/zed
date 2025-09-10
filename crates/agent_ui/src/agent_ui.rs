@@ -28,7 +28,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use agent::{Thread, ThreadId};
-use agent_servers::AgentServerSettings;
 use agent_settings::{AgentProfileId, AgentSettings, LanguageModelSelection};
 use assistant_slash_command::SlashCommandRegistry;
 use client::Client;
@@ -41,6 +40,7 @@ use language_model::{
     ConfiguredModel, LanguageModel, LanguageModelId, LanguageModelProviderId, LanguageModelRegistry,
 };
 use project::DisableAiSettings;
+use project::agent_server_store::AgentServerCommand;
 use prompt_store::PromptBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -72,8 +72,10 @@ actions!(
         ToggleOptionsMenu,
         /// Deletes the recently opened thread from history.
         DeleteRecentlyOpenThread,
-        /// Toggles the profile selector for switching between agent profiles.
+        /// Toggles the profile or mode selector for switching between agent profiles.
         ToggleProfileSelector,
+        /// Cycles through available session modes.
+        CycleModeSelector,
         /// Removes all added context from the current conversation.
         RemoveAllContext,
         /// Expands the message editor to full size.
@@ -160,6 +162,7 @@ pub struct NewNativeAgentThreadFromSummary {
     from_session_id: agent_client_protocol::SessionId,
 }
 
+// TODO unify this with AgentType
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum ExternalAgent {
@@ -169,11 +172,28 @@ enum ExternalAgent {
     NativeAgent,
     Custom {
         name: SharedString,
-        settings: AgentServerSettings,
+        command: AgentServerCommand,
     },
 }
 
+fn placeholder_command() -> AgentServerCommand {
+    AgentServerCommand {
+        path: "/placeholder".into(),
+        args: vec![],
+        env: None,
+    }
+}
+
 impl ExternalAgent {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::NativeAgent => "zed",
+            Self::Gemini => "gemini-cli",
+            Self::ClaudeCode => "claude-code",
+            Self::Custom { .. } => "custom",
+        }
+    }
+
     pub fn server(
         &self,
         fs: Arc<dyn fs::Fs>,
@@ -183,10 +203,9 @@ impl ExternalAgent {
             Self::Gemini => Rc::new(agent_servers::Gemini),
             Self::ClaudeCode => Rc::new(agent_servers::ClaudeCode),
             Self::NativeAgent => Rc::new(agent2::NativeAgentServer::new(fs, history)),
-            Self::Custom { name, settings } => Rc::new(agent_servers::CustomAgentServer::new(
-                name.clone(),
-                settings,
-            )),
+            Self::Custom { name, command: _ } => {
+                Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
+            }
         }
     }
 }
@@ -327,8 +346,7 @@ fn update_command_palette_filter(cx: &mut App) {
             ];
             filter.show_action_types(edit_prediction_actions.iter());
 
-            filter
-                .show_action_types([TypeId::of::<zed_actions::OpenZedPredictOnboarding>()].iter());
+            filter.show_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
         }
     });
 }
